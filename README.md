@@ -1,4 +1,4 @@
-# بيان — تقارير التكلفة
+# Bayan
 
 A local, in-browser analyser for health-insurance pharmacy cost reports (Arabic, RTL). Excel files are read in the browser and never uploaded.
 
