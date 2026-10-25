@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#eef2f7">
+<title>بيان — تقارير التكلفة</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="brand">
+      <img src="favicon.svg" alt="">
+      <span>بيان</span>
+      <span class="tag">تقارير التكلفة</span>
+    </div>
+    <div class="actions">
+      <button class="btn btn-ghost" id="btn-paste">لصق</button>
+      <button class="btn btn-soft" id="btn-file">رفع ملفات</button>
+      <button class="btn btn-ghost" id="btn-copy-report" title="نسخ التقرير كنص">نسخ التقرير</button>
+      <button class="btn btn-solid" id="btn-export">تصدير</button>
+      <input type="file" id="file-input" accept=".xlsx,.xls,.xlsm" multiple hidden>
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+  <div id="notice-slot" aria-live="polite"></div>
+
+  <header class="card hero" id="hero"></header>
+
+  <section class="stats" id="stats" aria-label="المؤشرات"></section>
+
+  <section class="card panel" id="facts-card">
+    <div class="sec-head">
+      <h2 class="h-title">الملاحظات</h2>
+      <div class="h-tools">
+        <span class="hint">انقر على أي سطر لنسخه</span>
+        <button class="icon-btn" data-copy="facts">نسخ</button>
+      </div>
+    </div>
+    <div class="facts" id="facts"></div>
+    <div class="mix" id="mix"></div>
+  </section>
+
+  <section class="card panel" id="pharm-card">
+    <div class="sec-head">
+      <h2 class="h-title">الصيدليات</h2>
+      <div class="h-tools">
+        <button class="icon-btn" id="btn-edit-names">الأسماء والمناطق</button>
+        <button class="icon-btn" id="btn-restore-all" hidden>استعادة الأسماء الأصلية</button>
+        <button class="icon-btn" data-copy="pharm">نسخ TSV</button>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>الصيدلية</th>
+            <th>المنطقة</th>
+            <th class="th-num">الموازنة</th>
+            <th class="th-num">التذاكر</th>
+            <th class="th-num">التكلفة</th>
+            <th class="th-num">تكلفة/تذكرة</th>
+            <th class="th-num">الحصة</th>
+            <th>الحالة</th>
+          </tr>
+        </thead>
+        <tbody id="ph-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card panel" id="group-card">
+    <div class="sec-head">
+      <h2 class="h-title">التجميع</h2>
+      <div class="h-tools">
+        <button class="icon-btn" data-copy="group">نسخ TSV</button>
+      </div>
+    </div>
+
+    <div class="builder">
+      <div class="bbox">
+        <h3><span>تجميع حسب</span><span class="hint">الترتيب يحدد التسلسل</span></h3>
+        <div class="keys" id="keys"></div>
+      </div>
+      <div class="bbox">
+        <h3><span>العمليات</span><button class="pill" id="btn-add-agg">+ عملية</button></h3>
+        <div class="aggs" id="aggs"></div>
+      </div>
+    </div>
+    <div class="bfoot">
+      <div class="presets" id="presets"></div>
+      <label class="toggle" id="sub-toggle"><input type="checkbox" id="opt-sub"> إجماليات فرعية</label>
+    </div>
+
+    <div class="table-scroll" style="margin-top:12px">
+      <table>
+        <thead><tr id="g-head"></tr></thead>
+        <tbody id="g-body"></tbody>
+        <tfoot><tr id="g-foot"></tr></tfoot>
+      </table>
+    </div>
+    <p class="resmeta" id="g-meta"></p>
+  </section>
+
+  <footer class="foot">المعالجة محلية بالكامل داخل المتصفح.</footer>
+</main>
+
+<div class="overlay" id="ov-paste" role="dialog" aria-modal="true" aria-label="لصق بيانات">
+  <div class="sheet">
+    <div class="sheet-h">
+      <h3>لصق بيانات</h3>
+      <p>الصق الجدول من Excel كما هو.</p>
+    </div>
+    <div class="sheet-b">
+      <textarea id="paste-area" spellcheck="false" placeholder="التخصص	اسم الطبيب	عدد التذاكر	التكلفة	نوع التذكرة"></textarea>
+      <p class="err-line" id="paste-err"></p>
+    </div>
+    <div class="sheet-f">
+      <button class="btn btn-solid" id="btn-parse">قراءة</button>
+      <button class="btn btn-ghost" data-close>إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="ov-stage" role="dialog" aria-modal="true" aria-label="مراجعة الصيدليات">
+  <div class="sheet wide">
+    <div class="sheet-h">
+      <h3 id="stage-title">مراجعة قبل التحميل</h3>
+      <p id="stage-sub"></p>
+    </div>
+    <div class="sheet-b">
+      <div class="bulk">
+        <div class="grp">
+          <span class="lbl">الاسم من</span>
+          <div class="seg" id="stage-namesrc">
+            <button data-v="orig" class="active">المكتشف</button>
+            <button data-v="file">الملف</button>
+            <button data-v="sheet">الورقة</button>
+          </div>
+        </div>
+        <div class="grp">
+          <span class="lbl">منطقة للمحدد</span>
+          <input class="inp" id="stage-area" placeholder="اسم المنطقة">
+          <button class="pill" id="stage-area-apply">تطبيق</button>
+        </div>
+        <div class="grp" id="stage-mode-wrap">
+          <span class="lbl">البيانات الحالية</span>
+          <div class="seg" id="stage-mode">
+            <button data-v="replace" class="active">استبدال</button>
+            <button data-v="append">إضافة</button>
+          </div>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table class="stage">
+          <thead>
+            <tr>
+              <th style="width:34px"><input type="checkbox" id="stage-all" checked aria-label="تحديد الكل"></th>
+              <th>المصدر</th>
+              <th>اسم الصيدلية</th>
+              <th>المنطقة</th>
+              <th class="th-num">البنود</th>
+              <th class="th-num">التكلفة</th>
+            </tr>
+          </thead>
+          <tbody id="stage-body"></tbody>
+        </table>
+      </div>
+      <p class="stage-note">الاسم والمنطقة الأصليان محفوظان ويمكن استعادتهما لاحقًا من جدول الصيدليات.</p>
+    </div>
+    <div class="sheet-f">
+      <button class="btn btn-solid" id="stage-ok">تحميل</button>
+      <button class="btn btn-ghost" data-close>إلغاء</button>
+      <span class="sp"></span>
+      <span class="hint" id="stage-count"></span>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="ov-export" role="dialog" aria-modal="true" aria-label="تصدير">
+  <div class="sheet">
+    <div class="sheet-h">
+      <h3>تصدير</h3>
+      <p>اختر الصيغة والأقسام.</p>
+    </div>
+    <div class="sheet-b">
+      <div class="ex-sub">الصيغة</div>
+      <div class="ex-grid" id="ex-format"></div>
+      <div class="ex-sub">الأقسام</div>
+      <div class="ex-grid" id="ex-sections"></div>
+      <div class="ex-sub">الخيارات</div>
+      <div class="ex-row">
+        <label class="ex-input">العنوان <input class="inp" id="ex-title"></label>
+      </div>
+    </div>
+    <div class="sheet-f">
+      <button class="btn btn-solid" id="ex-go">تصدير</button>
+      <button class="btn btn-ghost" data-close>إغلاق</button>
+    </div>
+  </div>
+</div>
+
+<div class="drophint">أفلت ملفات Excel</div>
+<div class="toast" id="toast" role="status"></div>
+<div id="report"></div>
+
+<script src="js/vendor/xlsx.bundle.js"></script>
+<script src="js/parse.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
