@@ -82,7 +82,7 @@
           <tr>
             <th>الصيدلية</th>
             <th>المنطقة</th>
-            <th class="th-num">الموازنة</th>
+            <th>الموازنة</th>
             <th class="th-num">التذاكر</th>
             <th class="th-num">التكلفة</th>
             <th class="th-num">تكلفة/تذكرة</th>
@@ -92,6 +92,48 @@
         </thead>
         <tbody id="ph-body"></tbody>
       </table>
+    </div>
+  </section>
+
+  <section class="card panel" id="filter-card">
+    <div class="sec-head">
+      <h2 class="h-title">المرشّحات</h2>
+      <div class="h-tools">
+        <span class="hint" id="f-meta"></span>
+        <button class="tool" id="f-clear" disabled><svg class="ico"><use href="#i-reset"/></svg><span>مسح المرشّحات</span></button>
+      </div>
+    </div>
+    <div class="filters">
+      <label class="fcell fwide"><span>بحث</span><input class="fld" id="f-q" placeholder="تخصص، طبيب، نوع، صيدلية…" autocomplete="off"></label>
+      <label class="fcell"><span>التكلفة من</span><input class="fld" id="f-cmin" inputmode="decimal" autocomplete="off"></label>
+      <label class="fcell"><span>التكلفة إلى</span><input class="fld" id="f-cmax" inputmode="decimal" autocomplete="off"></label>
+      <label class="fcell"><span>التذاكر من</span><input class="fld" id="f-tmin" inputmode="numeric" autocomplete="off"></label>
+      <label class="fcell"><span>التذاكر إلى</span><input class="fld" id="f-tmax" inputmode="numeric" autocomplete="off"></label>
+      <label class="fcell"><span>الفترة من</span><input class="fld" id="f-from" type="date"></label>
+      <label class="fcell"><span>الفترة إلى</span><input class="fld" id="f-to" type="date"></label>
+    </div>
+    <div class="fdims" id="f-dims"></div>
+    <p class="hint fnote">تُطبَّق المرشّحات على جدول البيانات والتجميع والتصدير. المؤشرات والملاحظات تعرض كل الصيدليات المشمولة.</p>
+  </section>
+
+  <section class="card panel" id="data-card">
+    <div class="sec-head">
+      <h2 class="h-title">البيانات</h2>
+      <div class="h-tools">
+        <span class="hint" id="d-meta"></span>
+        <button class="tool" data-copy="data"><svg class="ico"><use href="#i-copy"/></svg><span>نسخ TSV</span></button>
+      </div>
+    </div>
+    <div class="table-scroll data-scroll">
+      <table>
+        <thead><tr id="d-head"></tr></thead>
+        <tbody id="d-body"></tbody>
+        <tfoot><tr id="d-foot"></tr></tfoot>
+      </table>
+    </div>
+    <div class="more" id="d-more" hidden>
+      <button class="tool" id="d-more-btn">عرض المزيد</button>
+      <button class="tool" id="d-all-btn">عرض الكل</button>
     </div>
   </section>
 
@@ -117,6 +159,8 @@
       <div class="presets" id="presets"></div>
       <label class="check" id="sub-toggle"><input type="checkbox" id="opt-sub"><span>إجماليات فرعية</span></label>
     </div>
+
+    <div class="views" id="views"></div>
 
     <div class="table-scroll gap-top">
       <table>
@@ -171,15 +215,13 @@
           </div>
         </div>
         <div class="grp">
-          <span class="lbl">الموازنة</span>
-          <div class="seg" id="stage-budgetsrc">
-            <button type="button" data-v="orig" class="active">المكتشفة</button>
-            <button type="button" data-v="none">بدون</button>
-          </div>
+          <span class="lbl">الموازنة للمحدد</span>
+          <div class="combo"><input class="fld" id="stage-tag" placeholder="مثال: طلاب" autocomplete="off"><button type="button" class="combo-btn" data-menu="bulk" data-bf="tag" tabindex="-1" aria-label="اختيار" aria-haspopup="listbox" aria-expanded="false"><svg class="ico"><use href="#i-chev-d"/></svg></button></div>
+          <button class="tool" id="stage-tag-apply">تطبيق</button>
         </div>
         <div class="grp">
           <span class="lbl">منطقة للمحدد</span>
-          <input class="fld" id="stage-area" placeholder="اسم المنطقة">
+          <div class="combo"><input class="fld" id="stage-area" placeholder="اسم المنطقة" autocomplete="off"><button type="button" class="combo-btn" data-menu="bulk" data-bf="area" tabindex="-1" aria-label="اختيار" aria-haspopup="listbox" aria-expanded="false"><svg class="ico"><use href="#i-chev-d"/></svg></button></div>
           <button class="tool" id="stage-area-apply">تطبيق</button>
         </div>
         <div class="grp" id="stage-mode-wrap">
@@ -213,6 +255,43 @@
       <button class="btn btn-ghost" data-close>إلغاء</button>
       <span class="sp"></span>
       <span class="hint" id="stage-count"></span>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="ov-source" role="dialog" aria-modal="true" aria-label="مصدر البيانات">
+  <div class="sheet wide">
+    <div class="sheet-h">
+      <div>
+        <h3>مصدر البيانات</h3>
+        <p id="src-sub"></p>
+      </div>
+      <button class="tool icon" data-close aria-label="إغلاق"><svg class="ico"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="sheet-b">
+      <div class="bulk">
+        <div class="grp">
+          <span class="lbl">الورقة</span>
+          <button type="button" class="fld sel srcsel" id="src-sheet" data-menu="src-sheet" aria-haspopup="listbox" aria-expanded="false"><span></span><svg class="ico"><use href="#i-chev-d"/></svg></button>
+        </div>
+        <div class="grp">
+          <span class="lbl">صف العناوين</span>
+          <input class="fld narrow num" id="src-hdr" inputmode="numeric" autocomplete="off" aria-label="رقم صف العناوين">
+        </div>
+        <button class="tool" id="src-auto"><svg class="ico"><use href="#i-reset"/></svg><span>اكتشاف تلقائي</span></button>
+      </div>
+      <p class="stage-note src-note">انقر على رقم أي صف لاعتباره صف العناوين، ثم حدّد دور كل عمود من القائمة فوقه.</p>
+      <div class="table-scroll src-scroll">
+        <table class="srcgrid">
+          <thead id="src-head"></thead>
+          <tbody id="src-body"></tbody>
+        </table>
+      </div>
+      <p class="src-sum" id="src-sum"></p>
+    </div>
+    <div class="sheet-f">
+      <button class="btn btn-solid" id="src-ok">تطبيق</button>
+      <button class="btn btn-ghost" data-close>إلغاء</button>
     </div>
   </div>
 </div>

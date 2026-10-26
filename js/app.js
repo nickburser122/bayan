@@ -8,9 +8,16 @@ const pct = r => r == null || !isFinite(r) ? '—' : (r * 100).toFixed(1) + '%';
 const nsp = t => '<span class="num">' + t + '</span>';
 const ic = n => '<svg class="ico" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
 const cleanText = s => String(s == null ? '' : s).replace(/[\u200e\u200f\u202a-\u202e]/g, '').replace(/\s+/g, ' ').trim();
-const plainNum = n => n == null || !isFinite(n) ? '' : String(Math.round(n * 100) / 100);
-const emptyCands = () => ({ names: [], areas: [], budgets: [] });
-const sameBudget = (a, b) => (a == null ? null : a) === (b == null ? null : b);
+const emptyCands = () => ({ names: [], areas: [] });
+const TAG_SEED = ['طلاب', 'مواليد'];
+const loadTags = () => { try { const t = JSON.parse(localStorage.getItem('bayan.tags') || 'null'); return Array.isArray(t) ? t.filter(x => typeof x === 'string' && x) : TAG_SEED.slice(); } catch (e) { return TAG_SEED.slice(); } };
+let savedTags = loadTags();
+const rememberTag = t => {
+  t = cleanText(t);
+  if (!t || savedTags.includes(t)) return;
+  savedTags.push(t);
+  try { localStorage.setItem('bayan.tags', JSON.stringify(savedTags)); } catch (e) {}
+};
 const baseName = f => String(f || '').replace(/\.[^.]+$/, '').trim();
 function uniqueNames(list){
   const total = new Map(), seen = new Map(), out = new Map();
@@ -30,7 +37,7 @@ const today = () => iso(new Date());
 const ORG = 'الهيئة العامة للتأمين الصحى';
 const NA = 'غير محدد';
 
-const DIMS = { specialty:'التخصص', doctor:'الطبيب', type:'نوع التذكرة', pharmacy:'الصيدلية', area:'المنطقة' };
+const DIMS = { specialty:'التخصص', doctor:'الطبيب', type:'نوع التذكرة', pharmacy:'الصيدلية', area:'المنطقة', tag:'الموازنة' };
 const MEAS = { cost:'التكلفة', tickets:'التذاكر', unit:'تكلفة التذكرة' };
 const OPS = {
   sum:      { label:'مجموع', f:'num' },
@@ -50,7 +57,7 @@ const autoLabel = a => {
   if (a.op === 'ratio') return 'تكلفة/تذكرة';
   if (a.op === 'count') return 'البنود';
   if (a.op === 'share') return 'حصة ' + fieldLabel(a.field);
-  if (a.op === 'distinct') return 'عدد ' + ({ specialty:'التخصصات', doctor:'الأطباء', type:'الأنواع', pharmacy:'الصيدليات', area:'المناطق' }[a.field] || fieldLabel(a.field));
+  if (a.op === 'distinct') return 'عدد ' + ({ specialty:'التخصصات', doctor:'الأطباء', type:'الأنواع', pharmacy:'الصيدليات', area:'المناطق', tag:'الموازنات' }[a.field] || fieldLabel(a.field));
   if (a.op === 'list') return fieldLabel(a.field);
   if (a.op === 'sum') return fieldLabel(a.field);
   return OPS[a.op].label + ' ' + fieldLabel(a.field);
@@ -80,8 +87,13 @@ const state = {
   isSample: true,
   source: null,
   prev: null,
-  group: { keys:['specialty'], aggs: DEFAULT_AGGS(), subtotals:false, sort:null }
+  group: { keys:['specialty'], aggs: DEFAULT_AGGS(), subtotals:false, sort:null },
+  filters: null,
+  views: [],
+  savingView: false,
+  data: { sort:null, limit:200 }
 };
+const DATA_STEP = 200;
 let pid = 0;
 
 (function loadPrefs(){
@@ -108,7 +120,7 @@ function dataset(){
   const out = [];
   const un = uniqueNames(includedPh());
   includedPh().forEach(p => p.rows.forEach(r => out.push({
-    ...r, pharmacy:un.get(p.id), area:areaOf(p), pid:p.id,
+    ...r, pharmacy:un.get(p.id), area:areaOf(p), tag:(p.tag || '').trim(), pid:p.id,
     unit: r.tickets > 0 ? r.cost / r.tickets : null
   })));
   return out;
@@ -152,7 +164,7 @@ function cmp(a, b){
 }
 
 function groupModel(){
-  const rows = dataset();
+  const rows = viewRows();
   const g = state.group;
   const keys = g.keys.slice();
   const aggs = g.aggs;
@@ -197,31 +209,46 @@ function pharmModel(){
   const un = uniqueNames(list);
   const G = sum(list, phCost);
   const cols = [
-    { label:'الصيدلية', kind:'text' }, { label:'المنطقة', kind:'text' }, { label:'الموازنة', kind:'dec' },
+    { label:'الصيدلية', kind:'text' }, { label:'المنطقة', kind:'text' }, { label:'الموازنة', kind:'text' },
     { label:'التذاكر', kind:'int' }, { label:'التكلفة', kind:'dec' }, { label:'تكلفة/تذكرة', kind:'dec' },
-    { label:'الحصة', kind:'pct' }, { label:'تنفيذ الموازنة', kind:'pct' }
+    { label:'الحصة', kind:'pct' }
   ];
   const rows = list.map(p => {
     const c = phCost(p), t = phTickets(p);
-    return { type:'row', cells:[un.get(p.id), p.area || '', p.budget, t, c, t ? c / t : null, G ? c / G : null, p.budget ? c / p.budget : null] };
+    return { type:'row', cells:[un.get(p.id), p.area || '', p.tag || '', t, c, t ? c / t : null, G ? c / G : null] };
   });
-  const tb = sum(list, p => p.budget), tt = sum(list, phTickets);
-  const withB = list.filter(p => p.budget);
-  const total = ['الإجمالي', '', tb || null, tt, G, tt ? G / tt : null, G ? 1 : null, withB.length ? sum(withB, phCost) / sum(withB, p => p.budget) : null];
+  const tt = sum(list, phTickets);
+  const total = ['الإجمالي', '', '', tt, G, tt ? G / tt : null, G ? 1 : null];
   return { title:'الصيدليات', cols, rows, total };
 }
 
-function detailModel(){
-  const rows = dataset().sort(byCost);
+function detailModel(rowsIn, sort){
+  const rows = (rowsIn || viewRows()).slice();
   const T = sum(rows, r => r.cost);
   const multi = includedPh().length > 1;
-  const cols = [{ label:'التخصص', kind:'text' }, { label:'الطبيب', kind:'text' }, { label:'نوع التذكرة', kind:'text' }]
-    .concat(multi ? [{ label:'الصيدلية', kind:'text' }, { label:'المنطقة', kind:'text' }] : [])
-    .concat([{ label:'التذاكر', kind:'int' }, { label:'التكلفة', kind:'dec' }, { label:'تكلفة/تذكرة', kind:'dec' }, { label:'الحصة', kind:'pct' }]);
-  const out = rows.map(r => ({ type:'row', cells:[r.specialty, r.doctor, r.type].concat(multi ? [r.pharmacy, r.area] : []).concat([r.tickets, r.cost, r.unit, T ? r.cost / T : null]) }));
+  const anyTag = includedPh().some(p => (p.tag || '').trim());
+  const defs = [{ label:'التخصص', kind:'text', f:'specialty' }, { label:'الطبيب', kind:'text', f:'doctor' }, { label:'نوع التذكرة', kind:'text', f:'type' }];
+  if (multi) defs.push({ label:'الصيدلية', kind:'text', f:'pharmacy' }, { label:'المنطقة', kind:'text', f:'area' });
+  if (anyTag) defs.push({ label:'الموازنة', kind:'text', f:'tag' });
+  defs.push({ label:'التذاكر', kind:'int', f:'tickets' }, { label:'التكلفة', kind:'dec', f:'cost' }, { label:'تكلفة/تذكرة', kind:'dec', f:'unit' }, { label:'الحصة', kind:'pct', f:'share' });
+  const costCol = defs.findIndex(d => d.f === 'cost');
+  const valid = sort && sort.col >= 0 && sort.col < defs.length;
+  const col = valid ? sort.col : costCol;
+  const dir = valid ? sort.dir : -1;
+  const f = defs[col].f;
+  rows.forEach(r => { r.share = T ? r.cost / T : null; });
+  const empty = v => v == null || v === '';
+  rows.sort((a, b) => {
+    const av = a[f], bv = b[f];
+    if (empty(av) && empty(bv)) return b.cost - a.cost;
+    if (empty(av)) return 1;
+    if (empty(bv)) return -1;
+    return dir * cmp(av, bv) || b.cost - a.cost;
+  });
+  const out = rows.map(r => ({ type:'row', cells:defs.map(d => d.f === 'tag' ? (r.tag || '') : r[d.f]) }));
   const tt = sum(rows, r => r.tickets);
-  const total = ['الإجمالي', '', ''].concat(multi ? ['', ''] : []).concat([tt, T, tt ? T / tt : null, T ? 1 : null]);
-  return { title:'البنود التفصيلية', cols, rows:out, total };
+  const total = defs.map((d, i) => i === 0 ? 'الإجمالي' : d.f === 'tickets' ? tt : d.f === 'cost' ? T : d.f === 'unit' ? (tt ? T / tt : null) : d.f === 'share' ? (T ? 1 : null) : '');
+  return { title:'البنود التفصيلية', cols:defs, rows:out, total, sort:{ col, dir } };
 }
 
 function mixModel(){
@@ -248,11 +275,6 @@ function kpiModel(){
     { id:'unit', label:'تكلفة التذكرة', raw:TK ? C / TK : null, kind:'dec', unit:TK ? 'ج.م' : '', foot: units.length ? 'المدى ' + fmt2(Math.min(...units)) + ' – ' + fmt2(Math.max(...units)) : '' },
     { id:'rows', label:'البنود', raw:rows.length, kind:'int', unit:'بند', foot: new Set(rows.map(r => r.specialty)).size + ' تخصصات · ' + new Set(rows.map(r => r.doctor)).size + ' أطباء' }
   ];
-  const withB = inc.filter(p => p.budget);
-  if (withB.length){
-    const tb = sum(withB, p => p.budget), tc = sum(withB, phCost);
-    out.push({ id:'budget', label:'تنفيذ الموازنة', raw:tb ? tc / tb : null, kind:'pct', unit:'', foot:'من ' + fmt2(tb) + ' ج.م', warn: tc > tb });
-  }
   return out;
 }
 
@@ -281,13 +303,8 @@ function factsModel(){
   if (ph.length > 1) out.push({ k:'أعلى صيدلية', v: ph[0].name, n: fmt2(ph[0].cost), s: pct(ph[0].cost / C) });
   const ar = groupBy(rows, 'area').filter(g => g.name !== 'غير محددة');
   if (ar.length > 1) out.push({ k:'أعلى منطقة', v: ar[0].name, n: fmt2(ar[0].cost), s: pct(ar[0].cost / C) });
-  const withB = includedPh().filter(p => p.budget);
-  if (withB.length){
-    const un = uniqueNames(includedPh());
-    const over = withB.filter(p => phCost(p) > p.budget);
-    if (over.length) out.push({ k:'تجاوز الموازنة', v: over.map(p => un.get(p.id)).join('، '), n: String(over.length), s: 'من ' + withB.length, warn:true });
-    else out.push({ k:'الموازنة', v:'كل الصيدليات ضمن الموازنة', n: pct(sum(withB, phCost) / sum(withB, p => p.budget)), s:'تنفيذ' });
-  }
+  const tg = groupBy(rows, 'tag').filter(g => g.name !== NA);
+  if (tg.length > 1) out.push({ k:'أعلى موازنة', v: tg[0].name, n: fmt2(tg[0].cost), s: pct(tg[0].cost / C) });
   return out;
 }
 
@@ -356,23 +373,22 @@ const shareCell = r => {
   return '<span class="share"><span class="share-track"><span class="share-fill" style="width:' + p.toFixed(1) + '%"></span></span><span class="share-val num">' + pct(r) + '</span></span>';
 };
 
-const phChanged = p => p.name !== p.origName || (p.area || '') !== (p.origArea || '') || !sameBudget(p.budget, p.origBudget);
-const restorePh = p => { p.name = p.origName; p.area = p.origArea || ''; p.budget = p.origBudget == null ? null : p.origBudget; };
-const phDisplay = (p, f) => f === 'budget' ? (p.budget != null ? fmt2(p.budget) : '') : f === 'name' ? p.name : (p.area || '');
+const phChanged = p => p.name !== p.origName || (p.area || '') !== (p.origArea || '') || (p.tag || '') !== (p.origTag || '');
+const restorePh = p => { p.name = p.origName; p.area = p.origArea || ''; p.tag = p.origTag || ''; };
+const phDisplay = (p, f) => f === 'name' ? p.name : (p[f] || '');
 
 function phCells(p, G, dup){
   const c = phCost(p), t = phTickets(p);
-  const over = p.budget && c > p.budget;
-  const nCh = p.name !== p.origName, aCh = (p.area || '') !== (p.origArea || ''), bCh = !sameBudget(p.budget, p.origBudget);
-  const edit = (f, label) => '<span class="edit" contenteditable="true" role="textbox" spellcheck="false" data-p="' + p.id + '" data-f="' + f + '" aria-label="' + label + '"' + (f === 'budget' ? ' inputmode="decimal"' : '') + '>' + esc(phDisplay(p, f)) + '</span>';
+  const nCh = p.name !== p.origName, aCh = (p.area || '') !== (p.origArea || ''), gCh = (p.tag || '') !== (p.origTag || '');
+  const edit = (f, label) => '<span class="edit" contenteditable="true" role="textbox" spellcheck="false" data-p="' + p.id + '" data-f="' + f + '" aria-label="' + label + '">' + esc(phDisplay(p, f)) + '</span>';
   return [
     { cls: '', html: '<span class="cellx">' + edit('name', 'اسم الصيدلية') + (dup ? '<span class="chip warn">اسم مكرر</span>' : '') +
-      (nCh || aCh || bCh ? '<button class="tool xs plain" data-restore="' + p.id + '" title="استعادة الأصل" aria-label="استعادة الأصل">' + ic('reset') + '</button>' : '') + '</span>' +
+      (nCh || aCh || gCh ? '<button class="tool xs plain" data-restore="' + p.id + '" title="استعادة الأصل" aria-label="استعادة الأصل">' + ic('reset') + '</button>' : '') + '</span>' +
       (nCh ? '<span class="orig">الأصل: ' + esc(p.origName) + '</span>' : '') },
     { cls: '', html: edit('area', 'المنطقة') + (aCh ? '<span class="orig">الأصل: ' + esc(p.origArea || '—') + '</span>' : '') },
-    { cls: 'td-num', html: edit('budget', 'الموازنة') +
-      (p.budget ? '<span class="bmeta' + (over ? ' warn' : '') + '">' + pct(c / p.budget) + (over ? ' · تجاوز' : '') + '</span>' : '') +
-      (bCh ? '<span class="orig">الأصل: ' + (p.origBudget != null ? fmt2(p.origBudget) : '—') + '</span>' : '') },
+    { cls: '', html: '<span class="cellx">' + edit('tag', 'الموازنة') +
+      '<button class="tool xs plain" data-menu="ph-tag" data-p="' + p.id + '" title="اختيار من القائمة" aria-label="اختيار الموازنة" aria-haspopup="listbox" aria-expanded="false">' + ic('chev-d') + '</button></span>' +
+      (gCh ? '<span class="orig">الأصل: ' + esc(p.origTag || '—') + '</span>' : '') },
     { cls: 'td-num', html: fmt0(t) },
     { cls: 'td-num', html: fmt2(c) },
     { cls: 'td-num', html: t ? fmt2(c / t) : '—' },
@@ -452,6 +468,7 @@ function renderBuilder(){
 
   const multi = includedPh().length > 1;
   const areas = new Set(includedPh().map(areaOf)).size > 1;
+  const tags = new Set(includedPh().map(p => (p.tag || '').trim()).filter(Boolean)).size > 1;
   const presets = [
     ['التخصص', ['specialty']],
     ['الطبيب', ['doctor']],
@@ -461,6 +478,7 @@ function renderBuilder(){
   ];
   if (multi) presets.push(['الصيدلية', ['pharmacy']], ['الصيدلية › التخصص', ['pharmacy', 'specialty']]);
   if (areas) presets.push(['المنطقة', ['area']], ['المنطقة › الصيدلية', ['area', 'pharmacy']]);
+  if (tags) presets.push(['الموازنة', ['tag']], ['الموازنة › الصيدلية', ['tag', 'pharmacy']]);
   presets.push(['تفصيلي', ['specialty', 'doctor', 'type'].concat(multi ? ['pharmacy'] : [])]);
   const cur = JSON.stringify(g.keys);
   $('#presets').innerHTML = '<span class="lbl">جاهز:</span>' + presets.map(p => {
@@ -469,6 +487,7 @@ function renderBuilder(){
   }).join('') + '<button class="tool" id="btn-reset-aggs" title="العمليات الافتراضية">' + ic('reset') + '<span>العمليات</span></button>';
   $('#opt-sub').checked = g.subtotals;
   $('#sub-toggle').style.display = g.keys.length > 1 ? '' : 'none';
+  renderViews();
 }
 
 let lastGroup = null;
@@ -506,12 +525,139 @@ function renderGroup(){
 }
 const groupModelAllRow = m => m.rows.length ? m.rows[0].cells : [];
 
+const FILTER_TEXT = ['specialty', 'doctor', 'type', 'pharmacy', 'area', 'tag'];
+const emptyFilters = () => ({ q: '', cMin: '', cMax: '', tMin: '', tMax: '', from: '', to: '', dims: {} });
+
+function filterCount(){
+  const f = state.filters;
+  let n = 0;
+  if (f.q.trim()) n++;
+  ['cMin', 'cMax', 'tMin', 'tMax'].forEach(k => { if (f[k] !== '') n++; });
+  if (f.from || f.to) n++;
+  Object.values(f.dims).forEach(a => { if (a.length) n++; });
+  return n;
+}
+
+function viewRows(){
+  const f = state.filters;
+  const rows = dataset();
+  if (!filterCount()) return rows;
+  const q = norm(f.q).toLowerCase();
+  const num = v => v === '' ? null : toNum(v);
+  const cMin = num(f.cMin), cMax = num(f.cMax), tMin = num(f.tMin), tMax = num(f.tMax);
+  const ph = new Map(includedPh().map(p => [p.id, p]));
+  return rows.filter(r => {
+    if (q && !FILTER_TEXT.some(k => String(r[k] || '').toLowerCase().includes(q))) return false;
+    if (cMin != null && !(r.cost >= cMin)) return false;
+    if (cMax != null && !(r.cost <= cMax)) return false;
+    if (tMin != null && !(r.tickets >= tMin)) return false;
+    if (tMax != null && !(r.tickets <= tMax)) return false;
+    if (f.from || f.to){
+      const p = ph.get(r.pid);
+      if (p){
+        if (f.from && p.to && p.to < f.from) return false;
+        if (f.to && p.from && p.from > f.to) return false;
+      }
+    }
+    for (const k in f.dims){
+      const a = f.dims[k];
+      if (a.length && !a.includes(r[k] || NA)) return false;
+    }
+    return true;
+  });
+}
+
+function dimValues(k){
+  return groupBy(dataset(), k).map(g => g.name);
+}
+
+function renderFilterMeta(){
+  const n = filterCount();
+  const total = dataset().length, shown = viewRows().length;
+  $('#f-clear').disabled = !n;
+  $('#f-meta').textContent = n ? shown + ' من ' + total + ' بند · ' + n + (n === 1 ? ' مرشّح' : ' مرشّحات') : total + ' بند';
+}
+
+function renderFilters(){
+  const f = state.filters;
+  $('#f-dims').innerHTML = Object.keys(DIMS).map(k => {
+    const c = (f.dims[k] || []).length;
+    return '<button type="button" class="tool' + (c ? ' on' : '') + '" data-menu="filter-dim" data-dim="' + k + '" aria-haspopup="listbox" aria-expanded="false"><span>' + esc(DIMS[k]) + '</span>' + (c ? '<span class="chip">' + c + '</span>' : '') + ic('chev-d') + '</button>';
+  }).join('');
+  renderFilterMeta();
+}
+
+let lastData = null;
+function renderData(){
+  const m = detailModel(null, state.data.sort);
+  lastData = m;
+  const sc = m.sort.col;
+  $('#d-head').innerHTML = m.cols.map((c, i) =>
+    '<th class="sortable' + (c.kind !== 'text' ? ' th-num' : '') + '" data-dsort="' + i + '">' + esc(c.label) +
+    (sc === i ? '<span class="arr' + (m.sort.dir > 0 ? ' up' : '') + '">' + ic('chev-d') + '</span>' : '') + '</th>'
+  ).join('');
+  const shown = m.rows.slice(0, state.data.limit);
+  const cell = (v, c) => {
+    if (c.kind === 'text') return '<td>' + esc(v == null ? '' : v) + '</td>';
+    if (c.kind === 'pct') return '<td class="td-num" data-raw="' + esc(rawKind(v, c.kind)) + '">' + shareCell(v) + '</td>';
+    return '<td class="td-num" data-raw="' + esc(rawKind(v, c.kind)) + '">' + fmtKind(v, c.kind) + '</td>';
+  };
+  $('#d-body').innerHTML = shown.length
+    ? shown.map(r => '<tr class="row">' + r.cells.map((v, i) => cell(v, m.cols[i])).join('') + '</tr>').join('')
+    : '<tr><td colspan="' + m.cols.length + '"><div class="empty">لا توجد بنود مطابقة.</div></td></tr>';
+  $('#d-foot').innerHTML = m.rows.length ? m.total.map((v, i) => {
+    const c = m.cols[i];
+    if (c.kind === 'text') return '<td>' + esc(v || '') + '</td>';
+    return '<td class="td-num" data-raw="' + esc(rawKind(v, c.kind)) + '">' + fmtKind(v, c.kind) + '</td>';
+  }).join('') : '';
+  const left = m.rows.length - shown.length;
+  $('#d-more').hidden = left <= 0;
+  $('#d-more-btn').textContent = 'عرض المزيد (' + Math.min(left, DATA_STEP) + ')';
+  $('#d-all-btn').textContent = 'عرض الكل (' + m.rows.length + ')';
+  $('#d-meta').textContent = shown.length + ' من ' + m.rows.length + ' بند · انقر رأس العمود للفرز وأي رقم لنسخه';
+}
+
+const viewSpec = () => ({
+  keys: state.group.keys.slice(),
+  aggs: state.group.aggs.map(a => ({ op: a.op, field: a.field, label: a.label, auto: a.auto })),
+  subtotals: state.group.subtotals
+});
+const sameViewSpec = (v, w) => JSON.stringify({ k: v.keys, a: v.aggs.map(a => [a.op, a.field, a.label]), s: !!v.subtotals }) === JSON.stringify({ k: w.keys, a: w.aggs.map(a => [a.op, a.field, a.label]), s: !!w.subtotals });
+const saveViews = () => { try { localStorage.setItem('bayan.views', JSON.stringify(state.views)); } catch (e) {} };
+
+function applyView(v){
+  const g = state.group;
+  g.keys = v.keys.filter(k => DIMS[k]);
+  const aggs = v.aggs.filter(a => OPS[a.op]).map(a => ({ ...mkAgg(a.op, a.field, a.label), auto: !!a.auto }));
+  g.aggs = aggs.length ? aggs : DEFAULT_AGGS();
+  g.subtotals = !!v.subtotals;
+  g.sort = null;
+  savePrefs();
+  renderBuilder();
+  renderGroup();
+}
+
+function renderViews(){
+  const cur = viewSpec();
+  const chips = state.views.map(v =>
+    '<span class="vchip' + (sameViewSpec(v, cur) ? ' on' : '') + '"><button type="button" class="tool" data-view="' + v.id + '">' + esc(v.name) + '</button>' +
+    '<button type="button" class="chip-x" data-vdel="' + v.id + '" title="حذف العرض" aria-label="حذف العرض">' + ic('x') + '</button></span>'
+  ).join('');
+  const tail = state.savingView
+    ? '<input class="fld vname" id="view-name" maxlength="40" placeholder="اسم العرض" autocomplete="off"><button type="button" class="tool" id="view-ok">حفظ</button><button type="button" class="chip-x" id="view-cancel" aria-label="إلغاء">' + ic('x') + '</button>'
+    : '<button type="button" class="tool" id="view-save">' + ic('plus') + '<span>حفظ العرض الحالي</span></button>';
+  $('#views').innerHTML = '<span class="lbl">عروض محفوظة:</span>' + chips + tail;
+  if (state.savingView){ const i = $('#view-name'); if (i) i.focus(); }
+}
+
 function renderAll(){
   renderHero();
   renderStats();
   renderFacts();
   renderMix();
   renderPharmacies();
+  renderFilters();
+  renderData();
   renderBuilder();
   renderGroup();
 }
@@ -531,7 +677,7 @@ function notify(msg, isErr, withUndo){
   $('#notice-slot').innerHTML = '<div class="notice' + (isErr ? ' err' : '') + '"><span>' + esc(msg) + '</span>' + (withUndo ? '<button class="tool" id="btn-undo">' + ic('reset') + '<span>تراجع</span></button>' : '') + '</div>';
   const u = $('#btn-undo');
   if (u) u.addEventListener('click', () => {
-    if (state.prev){ Object.assign(state, state.prev); state.prev = null; renderAll(); }
+    if (state.prev){ Object.assign(state, state.prev); state.prev = null; resetFilters(); renderAll(); }
     $('#notice-slot').innerHTML = '';
   });
   noticeTimer = setTimeout(() => { $('#notice-slot').innerHTML = ''; }, 7000);
@@ -609,7 +755,7 @@ function sectionModels(ids){
     if (id === 'mix') out.mix = mixModel();
     if (id === 'pharm') out.pharm = pharmModel();
     if (id === 'group') out.group = groupModel();
-    if (id === 'detail') out.detail = detailModel();
+    if (id === 'detail') out.detail = detailModel(null, null);
   });
   return out;
 }
@@ -799,7 +945,7 @@ document.addEventListener('keydown', e => {
 });
 
 const menuEl = $('#menu');
-const menu = { open: false, anchor: null, items: [], idx: -1, onPick: null, restore: null, navigated: false };
+const menu = { open: false, anchor: null, items: [], idx: -1, onPick: null, restore: null, navigated: false, multi: false };
 const isTextAnchor = () => menu.anchor && menu.anchor.matches('input,textarea');
 
 function highlight(i){
@@ -810,7 +956,7 @@ function highlight(i){
 }
 
 function placeMenu(){
-  const r = (menu.anchor.closest('.combo') || menu.anchor).getBoundingClientRect();
+  const r = menu.anchor.getBoundingClientRect();
   const vw = document.documentElement.clientWidth, vh = window.innerHeight;
   menuEl.style.minWidth = Math.max(140, Math.round(r.width)) + 'px';
   menuEl.style.maxHeight = '';
@@ -825,6 +971,13 @@ function placeMenu(){
   menuEl.style.top = Math.max(8, up ? r.top - h - 6 : r.bottom + 6) + 'px';
 }
 
+function renderMenuItems(){
+  menuEl.innerHTML = menu.items.map((it, i) => it.sep ? '<div class="menu-sep"></div>' :
+    '<button type="button" tabindex="-1" class="menu-item' + (it.selected ? ' sel-on' : '') + '" role="option" aria-selected="' + (it.selected ? 'true' : 'false') + '" data-i="' + i + '">' +
+    '<span class="mi-l">' + esc(it.label) + '</span>' + (it.hint ? '<span class="mi-h">' + esc(it.hint) + '</span>' : '') +
+    (it.selected ? ic('check') : '<span class="mi-c"></span>') + '</button>').join('');
+}
+
 function openMenu(anchor, spec){
   closeMenu();
   const items = (spec.items || []).filter(Boolean);
@@ -834,11 +987,10 @@ function openMenu(anchor, spec){
   menu.items = items;
   menu.onPick = spec.onPick;
   menu.restore = spec.restore || null;
+  menu.multi = !!spec.multi;
   menu.navigated = false;
-  menuEl.innerHTML = items.map((it, i) => it.sep ? '<div class="menu-sep"></div>' :
-    '<button type="button" tabindex="-1" class="menu-item' + (it.selected ? ' sel-on' : '') + '" role="option" aria-selected="' + (it.selected ? 'true' : 'false') + '" data-i="' + i + '">' +
-    '<span class="mi-l">' + esc(it.label) + '</span>' + (it.hint ? '<span class="mi-h">' + esc(it.hint) + '</span>' : '') +
-    (it.selected ? ic('check') : '<span class="mi-c"></span>') + '</button>').join('');
+  menuEl.setAttribute('aria-multiselectable', menu.multi ? 'true' : 'false');
+  renderMenuItems();
   menuEl.hidden = false;
   anchor.setAttribute('aria-expanded', 'true');
   placeMenu();
@@ -868,6 +1020,15 @@ function stepMenu(d){
 function pickMenu(i){
   const it = menu.items[i];
   if (!it || it.sep) return;
+  if (menu.multi){
+    it.selected = !it.selected;
+    const top = menuEl.scrollTop;
+    renderMenuItems();
+    menuEl.scrollTop = top;
+    highlight(i);
+    if (menu.onPick) menu.onPick(it.value, it);
+    return;
+  }
   const cb = menu.onPick, back = menu.restore;
   closeMenu();
   if (cb) cb(it.value, it);
@@ -936,6 +1097,22 @@ function setAggProp(a, prop, value){
   renderGroup();
 }
 
+const uniq = list => [...new Set(list.map(x => cleanText(x)).filter(Boolean))];
+const knownAreas = () => uniq(state.pharmacies.map(p => p.area).concat(stage.items.map(i => i.area)));
+const knownTags = () => uniq(savedTags.concat(state.pharmacies.map(p => p.tag), stage.items.map(i => i.tag)));
+
+const ROLE_ITEMS = [
+  { value: '', label: 'تجاهل' }, { value: 'spec', label: 'التخصص' }, { value: 'doc', label: 'الطبيب' },
+  { value: 'type', label: 'نوع التذكرة' }, { value: 'count', label: 'عدد التذاكر' }, { value: 'cost', label: 'التكلفة' },
+  { value: 'pair', label: 'عدد + تكلفة في خلية' }
+];
+
+function updateDimButton(el, k){
+  const c = (state.filters.dims[k] || []).length;
+  el.classList.toggle('on', c > 0);
+  el.innerHTML = '<span>' + esc(DIMS[k]) + '</span>' + (c ? '<span class="chip">' + c + '</span>' : '') + ic('chev-d');
+}
+
 const menuSpecs = {
   'key-add'(el){
     return {
@@ -972,6 +1149,54 @@ const menuSpecs = {
       items: comboItems(it, f),
       onPick: v => setStageField(+row.dataset.i, f, v),
       restore: () => input.focus()
+    };
+  },
+  bulk(el){
+    const f = el.dataset.bf;
+    const input = $('#stage-' + f);
+    const list = f === 'tag' ? knownTags() : knownAreas();
+    const items = list.map(t => ({ value: t, label: t, selected: t === cleanText(input.value) }));
+    return { items, onPick: v => { input.value = v; }, restore: () => input.focus() };
+  },
+  'ph-tag'(el){
+    const p = state.pharmacies.find(x => x.id === el.dataset.p);
+    if (!p) return null;
+    const items = knownTags().map(t => ({ value: t, label: t, selected: t === p.tag }));
+    items.push({ sep: true }, { value: '', label: 'بدون موازنة', selected: !p.tag });
+    return {
+      items,
+      onPick: v => { p.tag = v; rememberTag(v); renderAll(); },
+      restore: () => { const b = $('[data-menu="ph-tag"][data-p="' + p.id + '"]'); if (b) b.focus(); }
+    };
+  },
+  'src-sheet'(el){
+    return {
+      items: srcEd.sheets.map(s => ({ value: s.sheetName, label: s.sheetName, selected: s.sheetName === srcEd.sheet })),
+      onPick: v => srcLoadSheet(v, null),
+      restore: () => { const b = $('#src-sheet'); if (b) b.focus(); }
+    };
+  },
+  'src-role'(el){
+    const c = +el.dataset.c;
+    return {
+      items: ROLE_ITEMS.map(r => ({ value: r.value, label: r.label, selected: srcEd.roles[c] === r.value })),
+      onPick: v => srcSetRole(c, v),
+      restore: () => { const b = $('[data-menu="src-role"][data-c="' + c + '"]'); if (b) b.focus(); }
+    };
+  },
+  'filter-dim'(el){
+    const k = el.dataset.dim;
+    const cur = state.filters.dims[k] || [];
+    return {
+      multi: true,
+      items: dimValues(k).map(v => ({ value: v, label: v, selected: cur.includes(v) })),
+      onPick: (v, it) => {
+        const set = new Set(state.filters.dims[k] || []);
+        if (it.selected) set.add(v); else set.delete(v);
+        state.filters.dims[k] = [...set];
+        updateDimButton(el, k);
+        refreshViews(true);
+      }
     };
   }
 };
@@ -1023,6 +1248,7 @@ document.addEventListener('click', e => {
     if (k === 'facts'){ const f = factsModel(); copy(f.map(factLine).join('\n'), null, 'تم نسخ الملاحظات'); }
     if (k === 'pharm') copy(tsvOf(pharmModel()), tableHTML(pharmModel()), 'تم نسخ الجدول');
     if (k === 'group'){ const m = groupModel(); copy(tsvOf(m), tableHTML(m), 'تم نسخ الجدول'); }
+    if (k === 'data'){ const m = detailModel(null, state.data.sort); copy(tsvOf(m), tableHTML(m), 'تم نسخ الجدول'); }
     flash(b);
     return;
   }
@@ -1116,20 +1342,10 @@ $('#ph-body').addEventListener('focusout', e => {
   const p = state.pharmacies.find(x => x.id === el.dataset.p);
   if (!p) return;
   const f = el.dataset.f;
+  const v = cleanText(el.textContent).slice(0, f === 'tag' ? 60 : 140);
   let changed = false;
-  if (f === 'budget'){
-    const t = cleanText(norm(el.textContent));
-    if (!t){ if (p.budget != null){ p.budget = null; changed = true; } }
-    else {
-      const n = budgetNumber(t);
-      if (n == null) toast('قيمة الموازنة غير صالحة');
-      else if (n !== p.budget){ p.budget = n; changed = true; }
-    }
-  } else {
-    const v = cleanText(el.textContent).slice(0, 140);
-    if (f === 'name'){ const nv = v || p.origName; if (nv !== p.name){ p.name = nv; changed = true; } }
-    else if (v !== (p.area || '')){ p.area = v; changed = true; }
-  }
+  if (f === 'name'){ const nv = v || p.origName; if (nv !== p.name){ p.name = nv; changed = true; } }
+  else if (v !== (p[f] || '')){ p[f] = v; changed = true; if (f === 'tag') rememberTag(v); }
   el.textContent = phDisplay(p, f);
   if (changed) setTimeout(renderAll, 0);
 });
@@ -1146,10 +1362,8 @@ $('#ph-body').addEventListener('keydown', e => {
   }
 });
 $('#ph-body').addEventListener('beforeinput', e => {
-  const el = e.target.closest('.edit');
-  if (!el) return;
-  if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak'){ e.preventDefault(); return; }
-  if (el.dataset.f === 'budget' && e.data && /[^\d\u0660-\u0669\u06F0-\u06F9.,\u066B\u066C\u060C\s-]/.test(e.data)) e.preventDefault();
+  if (!e.target.closest('.edit')) return;
+  if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') e.preventDefault();
 });
 $('#ph-body').addEventListener('paste', e => {
   const el = e.target.closest('.edit');
@@ -1170,9 +1384,13 @@ $('#btn-restore-all').addEventListener('click', () => {
   toast('تمت استعادة الأصل');
 });
 
-const stage = { mode: 'import', items: [], nameSrc: 'orig', budgetSrc: 'orig', load: 'replace', label: '' };
+const fileStore = new Map();
+let fileSeq = 0;
+const addFile = (name, sheets) => { const k = 'f' + (++fileSeq); fileStore.set(k, { name, sheets }); return k; };
+const REASONS = { 'no-table': 'لم يُكتشف جدول', 'no-numeric': 'لا توجد أعمدة رقمية', 'no-rows': 'لا توجد صفوف بيانات', derived: 'ورقة ملخّصة', empty: 'ورقة فارغة' };
+const emptyMeta = sheetName => ({ org: null, name: fallbackName(sheetName), area: null, printed: null, from: null, to: null, nameCands: [], areaCands: [] });
 
-const knownAreas = () => [...new Set(state.pharmacies.map(p => p.area).concat(stage.items.map(i => i.area)).map(a => cleanText(a)).filter(Boolean))];
+const stage = { mode: 'import', items: [], nameSrc: 'orig', load: 'replace', label: '' };
 
 function comboItems(it, f){
   const items = [];
@@ -1192,33 +1410,34 @@ function comboItems(it, f){
     knownAreas().forEach(a => add(a, 'مستخدمة'));
     items.forEach(x => { x.selected = x.value === it.area; });
   } else {
-    c.budgets.forEach(x => add(fmt2(x.v), x.src, x.v));
-    if (it.origBudget != null) add(fmt2(it.origBudget), 'الأصل', it.origBudget);
-    items.forEach(x => { x.selected = x.value === it.budget; });
+    knownTags().forEach(t => add(t));
+    items.forEach(x => { x.selected = x.value === it.tag; });
     if (items.length) items.push({ sep: true });
-    items.push({ label: 'بدون موازنة', value: null, selected: it.budget == null });
+    items.push({ label: 'بدون موازنة', value: '', selected: !it.tag });
   }
   return items;
 }
 
 function comboHTML(it, f){
-  const val = f === 'budget' ? plainNum(it.budget) : (it[f] || '');
-  const orig = f === 'budget' ? plainNum(it.origBudget) : f === 'name' ? it.origName : (it.origArea || '');
-  const labels = { name: 'اسم الصيدلية', area: 'المنطقة', budget: 'الموازنة' };
-  const many = comboItems(it, f).some(x => !x.sep);
-  return '<div class="combo"><input class="fld' + (val !== orig ? ' changed' : '') + (f === 'budget' && it.bad ? ' invalid' : '') + '" data-sf="' + f + '" value="' + esc(val) + '" aria-label="' + labels[f] + '"' +
-    (f === 'budget' ? ' inputmode="decimal" autocomplete="off" placeholder="بدون"' : f === 'area' ? ' placeholder="—" autocomplete="off"' : ' autocomplete="off" title="الأصل: ' + esc(it.origName) + '"') + '>' +
-    (many ? '<button type="button" class="combo-btn" data-menu="combo" data-cf="' + f + '" tabindex="-1" aria-label="اختيار من القيم المكتشفة" aria-haspopup="listbox" aria-expanded="false">' + ic('chev-d') + '</button>' : '') + '</div>';
+  const val = it[f] || '';
+  const orig = f === 'name' ? it.origName : f === 'area' ? (it.origArea || '') : (it.origTag || '');
+  const labels = { name: 'اسم الصيدلية', area: 'المنطقة', tag: 'الموازنة' };
+  const extra = f === 'tag' ? ' placeholder="مثال: طلاب" autocomplete="off"' : f === 'area' ? ' placeholder="—" autocomplete="off"' : ' autocomplete="off" title="الأصل: ' + esc(it.origName) + '"';
+  return '<div class="combo"><input class="fld' + (val !== orig ? ' changed' : '') + '" data-sf="' + f + '" value="' + esc(val) + '" aria-label="' + labels[f] + '"' + extra + '>' +
+    '<button type="button" class="combo-btn" data-menu="combo" data-cf="' + f + '" tabindex="-1" aria-label="اختيار من القائمة" aria-haspopup="listbox" aria-expanded="false">' + ic('chev-d') + '</button></div>';
 }
 
 function stageRow(it, i){
-  const src = it.budget != null && it.budget === it.origBudget && it.meta && it.meta.budgetSrc ? '<span class="fsrc" title="' + esc(it.meta.budgetSrc) + '">من: ' + esc(it.meta.budgetSrc) + '</span>' : '';
+  const canEdit = fileStore.has(it.fileKey);
+  const status = it.ok ? '<span class="chip">' + (it.manual ? 'مصدر معدّل' : 'تلقائي') + '</span>' : '<span class="chip warn">' + esc(REASONS[it.reason] || 'غير مكتشف') + '</span>';
+  const where = it.ok && it.hdr >= 0 ? '<span class="fsrc">صف العناوين ' + (it.hdr + 1) + '</span>' : '';
   return '<tr data-i="' + i + '"' + (it.sel ? '' : ' class="off"') + '>' +
-    '<td class="col-sel"><input type="checkbox" data-sf="sel"' + (it.sel ? ' checked' : '') + ' aria-label="تحديد"></td>' +
-    '<td class="src"><b title="' + esc(it.fileName) + '">' + esc(it.fileName) + '</b>' + esc(it.sheetName) + '</td>' +
+    '<td class="col-sel"><input type="checkbox" data-sf="sel"' + (it.sel ? ' checked' : '') + (it.ok ? '' : ' disabled') + ' aria-label="تحديد"></td>' +
+    '<td class="src"><b title="' + esc(it.fileName) + '">' + esc(it.fileName) + '</b>' + esc(it.sheetName || '') +
+      '<span class="srcrow">' + status + (canEdit ? '<button type="button" class="tool xs" data-src="' + i + '" title="تعديل الورقة أو الجدول المستخدم">' + ic('edit') + '<span>تعديل المصدر</span></button>' : '') + '</span>' + where + '</td>' +
     '<td class="cell-name">' + comboHTML(it, 'name') + '</td>' +
     '<td class="cell-area">' + comboHTML(it, 'area') + '</td>' +
-    '<td class="cell-budget">' + comboHTML(it, 'budget') + src + '</td>' +
+    '<td class="cell-tag">' + comboHTML(it, 'tag') + '</td>' +
     '<td class="td-num">' + it.rows.length + '</td>' +
     '<td class="td-num">' + fmt2(sum(it.rows, r => r.cost)) + '</td>' +
   '</tr>';
@@ -1226,11 +1445,14 @@ function stageRow(it, i){
 
 function syncStageMeta(){
   const imp = stage.mode === 'import';
-  const n = stage.items.filter(i => i.sel).length;
+  const usable = stage.items.filter(i => i.ok);
+  const n = usable.filter(i => i.sel).length;
   const all = $('#stage-all');
-  all.checked = n === stage.items.length && n > 0;
-  all.indeterminate = n > 0 && n < stage.items.length;
-  $('#stage-count').textContent = n + ' / ' + stage.items.length + ' محددة';
+  all.disabled = !usable.length;
+  all.checked = n === usable.length && n > 0;
+  all.indeterminate = n > 0 && n < usable.length;
+  const bad = stage.items.length - usable.length;
+  $('#stage-count').textContent = n + ' / ' + usable.length + ' محددة' + (bad ? ' · ' + bad + ' غير مطابقة' : '');
   $('#stage-ok').disabled = imp && !n;
 }
 
@@ -1240,14 +1462,12 @@ function renderStage(){
   $('#stage-sub').textContent = imp ? stage.items.length + ' ورقة من ' + stage.label : 'عدّل الاسم والمنطقة والموازنة أو استعد الأصل.';
   $('#stage-ok').textContent = imp ? 'تحميل' : 'حفظ';
   $('#stage-note').textContent = imp
-    ? 'اختر الاسم والموازنة من القيم المكتشفة في الملف أو اكتبهما. الأصل محفوظ ويمكن استعادته لاحقًا من جدول الصيدليات.'
+    ? 'الموازنة وسم نصي (مثل طلاب أو مواليد) تكتبه أو تختاره، ولا تُقرأ من الملف. إن اختار البرنامج جدولًا أو ورقة غير صحيحة فاستخدم «تعديل المصدر».'
     : 'حدّد الصفوف لتطبيق الإعدادات الجماعية عليها. التغييرات تُحفظ عند الضغط على «حفظ» والأصل يبقى محفوظًا.';
   $('#stage-mode-wrap').style.display = imp && !state.isSample && state.pharmacies.length ? '' : 'none';
   $$('#stage-namesrc button').forEach(b => b.classList.toggle('active', b.dataset.v === stage.nameSrc));
-  $$('#stage-budgetsrc button').forEach(b => b.classList.toggle('active', b.dataset.v === stage.budgetSrc));
   $$('#stage-mode button').forEach(b => b.classList.toggle('active', b.dataset.v === stage.load));
   $('#stage-namesrc button[data-v="orig"]').textContent = imp ? 'المكتشف' : 'الأصلي';
-  $('#stage-budgetsrc button[data-v="orig"]').textContent = imp ? 'المكتشفة' : 'الأصلية';
   $('#stage-body').innerHTML = stage.items.map(stageRow).join('');
   syncStageMeta();
 }
@@ -1257,27 +1477,26 @@ function openStage(mode, items, label){
   stage.items = items;
   stage.label = label || '';
   stage.nameSrc = 'orig';
-  stage.budgetSrc = 'orig';
   stage.load = 'replace';
   $('#stage-area').value = '';
+  $('#stage-tag').value = '';
   closeMenu();
   renderStage();
   openOverlay('#ov-stage');
 }
 
 function markChanged(it, f, inp){
-  const ch = f === 'budget' ? !sameBudget(it.budget, it.origBudget) : f === 'name' ? it.name !== it.origName : (it.area || '') !== (it.origArea || '');
-  inp.classList.toggle('changed', ch && !(f === 'budget' && it.bad));
-  if (f === 'budget') inp.classList.toggle('invalid', !!it.bad);
+  const orig = f === 'name' ? it.origName : f === 'area' ? (it.origArea || '') : (it.origTag || '');
+  inp.classList.toggle('changed', (it[f] || '') !== orig);
 }
 
 function setStageField(i, f, v){
   const it = stage.items[i];
   if (!it) return;
-  if (f === 'budget'){ it.budget = v; it.bad = false; } else it[f] = v;
+  it[f] = v;
   const inp = $('#stage-body tr[data-i="' + i + '"] [data-sf="' + f + '"]');
   if (!inp) return;
-  inp.value = f === 'budget' ? plainNum(v) : v;
+  inp.value = v;
   markChanged(it, f, inp);
 }
 
@@ -1288,31 +1507,28 @@ $('#stage-body').addEventListener('input', e => {
   if (!it || !f) return;
   if (f === 'sel'){ it.sel = e.target.checked; tr.classList.toggle('off', !it.sel); syncStageMeta(); return; }
   closeMenu();
-  if (f === 'budget'){
-    const t = cleanText(norm(e.target.value));
-    if (!t){ it.budget = null; it.bad = false; }
-    else {
-      const n = budgetNumber(t);
-      if (n == null) it.bad = true;
-      else { it.budget = n; it.bad = false; }
-    }
-  } else it[f] = e.target.value;
+  it[f] = e.target.value;
   markChanged(it, f, e.target);
 });
 $('#stage-body').addEventListener('focusout', e => {
   const f = e.target.dataset && e.target.dataset.sf;
-  if (!f || f === 'sel' || f === 'budget') return;
+  if (!f || f === 'sel') return;
   const it = stage.items[+e.target.closest('tr').dataset.i];
   if (!it) return;
   it[f] = cleanText(e.target.value);
   e.target.value = it[f];
   markChanged(it, f, e.target);
 });
+$('#stage-body').addEventListener('click', e => {
+  const b = e.target.closest('[data-src]');
+  if (b) openSource(+b.dataset.src);
+});
 $('#stage-all').addEventListener('change', e => {
-  stage.items.forEach(i => { i.sel = e.target.checked; });
+  stage.items.forEach(i => { if (i.ok) i.sel = e.target.checked; });
   $$('#stage-body tr').forEach(tr => {
-    tr.classList.toggle('off', !e.target.checked);
-    tr.querySelector('[data-sf="sel"]').checked = e.target.checked;
+    const it = stage.items[+tr.dataset.i];
+    tr.classList.toggle('off', !it.sel);
+    tr.querySelector('[data-sf="sel"]').checked = it.sel;
   });
   syncStageMeta();
 });
@@ -1327,62 +1543,204 @@ $('#stage-namesrc').addEventListener('click', e => {
   });
   renderStage();
 });
-$('#stage-budgetsrc').addEventListener('click', e => {
-  const b = e.target.closest('button');
-  if (!b) return;
-  stage.budgetSrc = b.dataset.v;
-  stage.items.forEach(it => {
-    if (!it.sel) return;
-    it.budget = stage.budgetSrc === 'none' ? null : (it.origBudget == null ? null : it.origBudget);
-    it.bad = false;
-  });
-  renderStage();
-});
 $('#stage-area-apply').addEventListener('click', () => {
   const v = cleanText($('#stage-area').value);
   stage.items.forEach(it => { if (it.sel) it.area = v; });
   renderStage();
 });
+$('#stage-tag-apply').addEventListener('click', () => {
+  const v = cleanText($('#stage-tag').value);
+  stage.items.forEach(it => { if (it.sel) it.tag = v; });
+  renderStage();
+});
 $('#stage-area').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); $('#stage-area-apply').click(); } });
+$('#stage-tag').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); $('#stage-tag-apply').click(); } });
 $('#stage-mode').addEventListener('click', e => { const b = e.target.closest('button'); if (b){ stage.load = b.dataset.v; renderStage(); } });
+
+const srcEd = { i: -1, sheets: [], sheet: '', M: [], hdr: -1, roles: [], res: null, ncol: 0 };
+const SRC_ROWS = 150, SRC_COLS = 16;
+const roleLabel = r => (ROLE_ITEMS.find(x => x.value === r) || ROLE_ITEMS[0]).label;
+
+function colsToRoles(cols, n){
+  const r = Array(n).fill('');
+  if (!cols) return r;
+  ['spec', 'doc', 'type', 'count', 'cost', 'pair'].forEach(k => { const c = cols[k]; if (c != null && c >= 0 && c < n) r[c] = k; });
+  return r;
+}
+function rolesToCols(roles){
+  const at = role => roles.indexOf(role);
+  return { spec: at('spec'), doc: at('doc'), type: at('type'), count: at('count'), cost: at('cost'), pair: at('pair') };
+}
+const srcCell = v => {
+  if (v == null) return '';
+  if (v instanceof Date) return iso(v) || '';
+  const t = String(v);
+  return t.length > 42 ? t.slice(0, 42) + '…' : t;
+};
+
+function srcRecalc(){
+  srcEd.res = srcEd.hdr >= 0 ? parseMatrix(srcEd.M, srcEd.sheet, { hdr: srcEd.hdr, cols: rolesToCols(srcEd.roles) }) : { ok: false, reason: 'no-table' };
+  const r = srcEd.res;
+  const hint = r.reason === 'no-numeric' ? ': اختر عمود التكلفة أو عمود «عدد + تكلفة في خلية».' : r.reason === 'no-table' ? ': اختر صف العناوين.' : '.';
+  $('#src-sum').className = 'src-sum ' + (r.ok ? 'ok' : 'bad');
+  $('#src-sum').textContent = r.ok ? r.rows.length + ' بند · التكلفة ' + fmt2(sum(r.rows, x => x.cost)) + ' · ' + r.meta.name : (REASONS[r.reason] || 'تعذّرت القراءة') + hint;
+  $('#src-ok').disabled = !r.ok;
+  $('#src-hdr').value = srcEd.hdr >= 0 ? srcEd.hdr + 1 : '';
+}
+
+function srcRender(){
+  const n = srcEd.ncol;
+  $('#src-sheet span').textContent = srcEd.sheet;
+  $('#src-head').innerHTML = '<tr><th class="rn">#</th>' + Array.from({ length: n }, (_, c) =>
+    '<th><button type="button" class="fld sel xs' + (srcEd.roles[c] ? ' set' : '') + '" data-menu="src-role" data-c="' + c + '" aria-haspopup="listbox" aria-expanded="false"><span>' + esc(roleLabel(srcEd.roles[c])) + '</span>' + ic('chev-d') + '</button></th>').join('') + '</tr>';
+  $('#src-body').innerHTML = srcEd.M.slice(0, SRC_ROWS).map((row, r) =>
+    '<tr class="' + (r === srcEd.hdr ? 'hdr' : r < srcEd.hdr ? 'pre' : '') + '"><td class="rn"><button type="button" data-srow="' + r + '" title="اعتماد كصف العناوين">' + (r + 1) + '</button></td>' +
+    Array.from({ length: n }, (_, c) => '<td>' + esc(srcCell((row || [])[c])) + '</td>').join('') + '</tr>').join('');
+}
+
+function srcLoadSheet(name, from){
+  const sh = srcEd.sheets.find(s => s.sheetName === name);
+  if (!sh) return;
+  srcEd.sheet = name;
+  srcEd.M = sh.M;
+  srcEd.ncol = Math.min(SRC_COLS, Math.max(1, ...sh.M.slice(0, 200).map(r => (r || []).length)));
+  const base = from || parseMatrix(sh.M, name);
+  srcEd.hdr = base.hdr != null ? base.hdr : -1;
+  srcEd.roles = colsToRoles(base.cols, srcEd.ncol);
+  srcRecalc();
+  srcRender();
+}
+
+function guessTextRoles(M, hdr, roles){
+  const out = roles.slice();
+  const want = ['spec', 'doc', 'type'].filter(r => !out.includes(r));
+  for (let c = 0; c < out.length && want.length; c++){
+    if (out[c]) continue;
+    let text = 0, num = 0;
+    for (let r = hdr + 1; r < Math.min(M.length, hdr + 40); r++){
+      const v = (M[r] || [])[c];
+      if (isBlank(v)) continue;
+      if (toNum(v) != null || pairParts(v)) num++; else text++;
+    }
+    if (text > 0 && text >= num * 2) out[c] = want.shift();
+  }
+  return out;
+}
+
+function srcSetHdr(r){
+  if (!(r >= 0 && r < srcEd.M.length)) { srcRecalc(); return; }
+  srcEd.hdr = r;
+  srcEd.roles = guessTextRoles(srcEd.M, r, colsToRoles(mapColumns(srcEd.M, r), srcEd.ncol));
+  srcRecalc();
+  srcRender();
+}
+
+function srcSetRole(c, role){
+  let roles = srcEd.roles.slice();
+  if (role) roles = roles.map(x => x === role ? '' : x);
+  if (role === 'pair') roles = roles.map(x => x === 'cost' || x === 'count' ? '' : x);
+  if (role === 'cost' || role === 'count') roles = roles.map(x => x === 'pair' ? '' : x);
+  roles[c] = role;
+  srcEd.roles = roles;
+  srcRecalc();
+  srcRender();
+}
+
+function openSource(i){
+  const it = stage.items[i];
+  const fs = it && fileStore.get(it.fileKey);
+  if (!fs || !fs.sheets.length) return;
+  srcEd.i = i;
+  srcEd.sheets = fs.sheets;
+  $('#src-sub').textContent = fs.name + ' · ' + fs.sheets.length + (fs.sheets.length === 1 ? ' ورقة' : ' أوراق');
+  const has = fs.sheets.some(s => s.sheetName === it.sheetName);
+  srcLoadSheet(has ? it.sheetName : fs.sheets[0].sheetName, has && it.cols && it.hdr >= 0 ? { hdr: it.hdr, cols: it.cols } : null);
+  openOverlay('#ov-source');
+}
+
+function applySource(it, res){
+  const meta = res.meta;
+  const nameKept = it.name !== it.origName, areaKept = (it.area || '') !== (it.origArea || '');
+  it.ok = true;
+  it.reason = '';
+  it.sel = true;
+  it.manual = true;
+  it.srcChanged = true;
+  it.sheetName = res.sheetName;
+  it.hdr = res.hdr;
+  it.cols = res.cols;
+  it.rows = res.rows;
+  it.meta = meta;
+  it.cands = mkCands(meta);
+  it.origName = meta.name;
+  it.origArea = meta.area || '';
+  if (!nameKept) it.name = meta.name;
+  if (!areaKept) it.area = meta.area || '';
+}
+
+$('#src-body').addEventListener('click', e => {
+  const b = e.target.closest('[data-srow]');
+  if (b) srcSetHdr(+b.dataset.srow);
+});
+$('#src-hdr').addEventListener('change', e => {
+  const n = parseInt(norm(e.target.value), 10);
+  srcSetHdr(Number.isFinite(n) ? n - 1 : -1);
+});
+$('#src-hdr').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); e.target.blur(); } });
+$('#src-auto').addEventListener('click', () => srcLoadSheet(srcEd.sheet, null));
+$('#src-ok').addEventListener('click', () => {
+  const r = srcEd.res, it = stage.items[srcEd.i];
+  if (!r || !r.ok || !it) return;
+  applySource(it, r);
+  closeOverlay($('#ov-source'));
+  renderStage();
+  toast('تم تحديث المصدر');
+});
 
 $('#stage-ok').addEventListener('click', () => {
   const edit = stage.mode === 'edit';
-  const chosen = edit ? stage.items : stage.items.filter(i => i.sel);
+  const chosen = edit ? stage.items : stage.items.filter(i => i.sel && i.ok);
   if (!chosen.length) return;
-  const bad = chosen.find(i => i.bad);
-  if (bad){
-    const inp = $('#stage-body tr[data-i="' + stage.items.indexOf(bad) + '"] [data-sf="budget"]');
-    if (inp) inp.focus();
-    toast('تحقق من قيمة الموازنة');
-    return;
-  }
   const nm = it => cleanText(it.name).slice(0, 140) || it.origName;
+  const tg = it => cleanText(it.tag).slice(0, 60);
   if (edit){
     chosen.forEach(it => {
       const p = state.pharmacies.find(x => x.id === it.pid);
-      if (p){ p.name = nm(it); p.area = cleanText(it.area); p.budget = it.budget == null ? null : it.budget; }
+      if (!p) return;
+      p.name = nm(it);
+      p.area = cleanText(it.area);
+      p.tag = tg(it);
+      rememberTag(p.tag);
+      if (it.srcChanged){
+        p.rows = it.rows; p.from = it.meta.from; p.to = it.meta.to; p.printed = it.meta.printed;
+        p.sheetName = it.sheetName; p.hdr = it.hdr; p.cols = it.cols; p.manual = true; p.cands = it.cands;
+        p.origName = it.origName; p.origArea = it.origArea;
+      }
     });
     closeOverlay($('#ov-stage'));
+    resetFilters();
     renderAll();
     toast('تم الحفظ');
     return;
   }
   const append = stage.load === 'append' && !state.isSample;
+  chosen.forEach(it => rememberTag(tg(it)));
   commit(chosen.map(it => ({
-    id: 'p' + (++pid), name: nm(it), area: cleanText(it.area),
-    origName: it.origName, origArea: it.origArea || '', origBudget: it.origBudget == null ? null : it.origBudget,
-    fileName: it.fileName, sheetName: it.sheetName, fromFile: it.fromFile, cands: it.cands,
-    budget: it.budget == null ? null : it.budget, from: it.meta.from, to: it.meta.to, printed: it.meta.printed, rows: it.rows, included: true
+    id: 'p' + (++pid), name: nm(it), area: cleanText(it.area), tag: tg(it),
+    origName: it.origName, origArea: it.origArea || '', origTag: tg(it),
+    fileKey: it.fileKey, fileName: it.fileName, sheetName: it.sheetName, fromFile: it.fromFile,
+    hdr: it.hdr, cols: it.cols, manual: !!it.manual, cands: it.cands,
+    from: it.meta.from, to: it.meta.to, printed: it.meta.printed, rows: it.rows, included: true
   })), stage.label, append);
   closeOverlay($('#ov-stage'));
 });
 $('#btn-edit-names').addEventListener('click', () => {
   openStage('edit', state.pharmacies.map(p => ({
-    sel: true, pid: p.id, fileName: p.fileName || '—', sheetName: p.sheetName || '', fromFile: !!p.fromFile,
-    origName: p.origName, origArea: p.origArea || '', origBudget: p.origBudget == null ? null : p.origBudget,
-    name: p.name, area: p.area || '', budget: p.budget == null ? null : p.budget,
-    rows: p.rows, meta: {}, cands: p.cands || emptyCands()
+    sel: true, ok: true, reason: '', pid: p.id, fileKey: p.fileKey, fileName: p.fileName || '—', sheetName: p.sheetName || '', fromFile: !!p.fromFile,
+    hdr: p.hdr == null ? -1 : p.hdr, cols: p.cols || null, manual: !!p.manual,
+    origName: p.origName, origArea: p.origArea || '', origTag: p.origTag || '',
+    name: p.name, area: p.area || '', tag: p.tag || '',
+    rows: p.rows, meta: { from: p.from, to: p.to, printed: p.printed }, cands: p.cands || emptyCands()
   })));
 });
 
@@ -1391,6 +1749,7 @@ function commit(list, label, append){
   state.pharmacies = append ? state.pharmacies.concat(list) : list;
   state.isSample = false;
   state.source = append && state.source ? state.source + ' + ' + label : label;
+  resetFilters();
   renderAll();
   notify('تم تحميل ' + phLabel(list.length) + (append ? ' (إضافة)' : '') + '.', false, true);
 }
@@ -1398,15 +1757,17 @@ function commit(list, label, append){
 function mkCands(meta){
   const names = (meta.nameCands || []).slice();
   if (!names.some(c => c.v === meta.name)) names.unshift({ v: meta.name, src: 'المكتشف' });
-  return { names, areas: (meta.areaCands || []).slice(), budgets: (meta.budgetCands || []).slice() };
+  return { names, areas: (meta.areaCands || []).slice() };
 }
 
-function stageItem(meta, rows, fileName, sheetName, fromFile){
+function stageItem(res, fileKey, fileName, fromFile){
+  const meta = res.ok ? res.meta : emptyMeta(res.sheetName);
   return {
-    sel: true, fileName, sheetName, fromFile,
-    origName: meta.name, origArea: meta.area || '', origBudget: meta.budget == null ? null : meta.budget,
-    name: meta.name, area: meta.area || '', budget: meta.budget == null ? null : meta.budget,
-    rows, meta, cands: mkCands(meta)
+    sel: !!res.ok, ok: !!res.ok, reason: res.reason || '', fileKey, fileName, sheetName: res.sheetName || '', fromFile,
+    hdr: res.hdr == null ? -1 : res.hdr, cols: res.cols || null, manual: !!res.manual,
+    origName: meta.name, origArea: meta.area || '', origTag: '',
+    name: meta.name, area: meta.area || '', tag: '',
+    rows: res.ok ? res.rows : [], meta, cands: mkCands(meta)
   };
 }
 
@@ -1416,18 +1777,15 @@ function readFiles(input){
   if (typeof XLSX === 'undefined'){ notify('مكتبة Excel غير محملة. استخدم «لصق».', true); return; }
   Promise.all(files.map(readOne)).then(out => {
     const items = [], failed = [];
-    let skipped = 0;
     out.forEach(o => {
       if (o.error){ failed.push(o.name); return; }
-      o.sheets.forEach(s => {
-        if (!s.ok){ skipped++; return; }
-        items.push(stageItem(s.meta, s.rows, o.name, s.sheetName, true));
-      });
+      const key = addFile(o.name, o.sheets.map(s => ({ sheetName: s.sheetName, M: s.M })));
+      o.sheets.forEach(s => { if (s.reason !== 'empty') items.push(stageItem(s, key, o.name, true)); });
     });
-    if (!items.length){ notify('لم يُعثر على جدول مطابق' + (failed.length ? ' · تعذر قراءة: ' + failed.join('، ') : '') + '.', true); return; }
-    const label = files.length === 1 ? files[0].name : files.length + ' ملفات';
-    openStage('import', items, label);
-    if (failed.length || skipped) notify([failed.length ? 'تعذر قراءة: ' + failed.join('، ') : '', skipped ? 'تم تجاهل ' + skipped + ' ورقة غير مطابقة' : ''].filter(Boolean).join(' · '), !!failed.length);
+    if (!items.length){ notify('لم يُعثر على بيانات' + (failed.length ? ' · تعذر قراءة: ' + failed.join('، ') : '') + '.', true); return; }
+    openStage('import', items, files.length === 1 ? files[0].name : files.length + ' ملفات');
+    if (failed.length) notify('تعذر قراءة: ' + failed.join('، '), true);
+    else if (!items.some(i => i.ok)) notify('لم يُكتشف جدول تلقائيًا. اختر «تعديل المصدر» لتحديد الورقة وصف العناوين والأعمدة.', true);
   });
 }
 
@@ -1450,15 +1808,85 @@ $('#paste-area').addEventListener('keydown', e => {
 $('#btn-parse').addEventListener('click', () => {
   const res = parsePasteText($('#paste-area').value);
   const err = $('#paste-err');
-  if (!res || !res.ok){
-    err.textContent = !res ? 'لا توجد بيانات.' : res.reason === 'no-table' ? 'لم يُعثر على صف العناوين (التخصص / الطبيب / نوع التذكرة).' : res.reason === 'no-numeric' ? 'لا توجد أعمدة رقمية للتكلفة.' : 'لا توجد صفوف بيانات.';
+  if (!res || res.reason === 'empty'){
+    err.textContent = 'لا توجد بيانات.';
     err.style.display = 'block';
     return;
   }
   err.style.display = 'none';
   closeOverlay($('#ov-paste'));
   $('#paste-area').value = '';
-  openStage('import', [stageItem(res.meta, res.rows, 'لصق', '', false)], 'بيانات ملصوقة');
+  const key = addFile('لصق', [{ sheetName: res.sheetName, M: res.M }]);
+  openStage('import', [stageItem(res, key, 'لصق', false)], 'بيانات ملصوقة');
+  if (!res.ok) notify('لم يُكتشف جدول تلقائيًا. اختر «تعديل المصدر» لتحديد صف العناوين والأعمدة.', true);
+});
+
+const FILTER_FIELDS = { 'f-q': 'q', 'f-cmin': 'cMin', 'f-cmax': 'cMax', 'f-tmin': 'tMin', 'f-tmax': 'tMax', 'f-from': 'from', 'f-to': 'to' };
+function refreshViews(skipDims){
+  state.data.limit = DATA_STEP;
+  if (skipDims) renderFilterMeta(); else renderFilters();
+  renderData();
+  renderGroup();
+}
+function resetFilters(){
+  state.filters = emptyFilters();
+  state.data = { sort: null, limit: DATA_STEP };
+  Object.keys(FILTER_FIELDS).forEach(id => { $('#' + id).value = ''; });
+}
+$('#filter-card').addEventListener('input', e => {
+  const k = FILTER_FIELDS[e.target.id];
+  if (!k) return;
+  state.filters[k] = e.target.value;
+  refreshViews(true);
+});
+$('#f-clear').addEventListener('click', () => { resetFilters(); refreshViews(false); });
+
+$('#d-head').addEventListener('click', e => {
+  const th = e.target.closest('[data-dsort]');
+  if (!th || !lastData) return;
+  const col = +th.dataset.dsort, cur = lastData.sort;
+  state.data.sort = { col, dir: cur && cur.col === col ? -cur.dir : (lastData.cols[col].kind === 'text' ? 1 : -1) };
+  renderData();
+});
+const copyCell = e => {
+  const td = e.target.closest('td[data-raw]');
+  if (td && td.dataset.raw) copy(td.dataset.raw, null, 'نُسخ ' + td.dataset.raw);
+};
+$('#d-body').addEventListener('click', copyCell);
+$('#d-foot').addEventListener('click', copyCell);
+$('#d-more-btn').addEventListener('click', () => { state.data.limit += DATA_STEP; renderData(); });
+$('#d-all-btn').addEventListener('click', () => { state.data.limit = Infinity; renderData(); });
+
+const loadViews = () => {
+  try {
+    const v = JSON.parse(localStorage.getItem('bayan.views') || '[]');
+    return Array.isArray(v) ? v.filter(x => x && x.id && x.name && Array.isArray(x.keys) && Array.isArray(x.aggs)) : [];
+  } catch (e) { return []; }
+};
+function commitView(){
+  const name = cleanText($('#view-name').value).slice(0, 40);
+  if (!name){ toast('اكتب اسمًا للعرض'); return; }
+  const spec = viewSpec();
+  const ex = state.views.find(v => v.name === name);
+  if (ex) Object.assign(ex, spec); else state.views.push({ id: 'v' + Date.now().toString(36), name, ...spec });
+  saveViews();
+  state.savingView = false;
+  renderViews();
+  toast('تم حفظ العرض');
+}
+$('#views').addEventListener('click', e => {
+  const v = e.target.closest('[data-view]');
+  const d = e.target.closest('[data-vdel]');
+  if (v){ const x = state.views.find(y => y.id === v.dataset.view); if (x) applyView(x); }
+  else if (d){ state.views = state.views.filter(y => y.id !== d.dataset.vdel); saveViews(); renderViews(); }
+  else if (e.target.closest('#view-save')){ state.savingView = true; renderViews(); }
+  else if (e.target.closest('#view-cancel')){ state.savingView = false; renderViews(); }
+  else if (e.target.closest('#view-ok')) commitView();
+});
+$('#views').addEventListener('keydown', e => {
+  if (e.target.id !== 'view-name') return;
+  if (e.key === 'Enter'){ e.preventDefault(); commitView(); }
+  else if (e.key === 'Escape'){ e.preventDefault(); e.stopPropagation(); state.savingView = false; renderViews(); }
 });
 
 let dragDepth = 0;
@@ -1468,10 +1896,13 @@ document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging'); if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) readFiles(e.dataTransfer.files); });
 
 (function boot(){
+  state.filters = emptyFilters();
+  state.views = loadViews();
   const s = parseMatrix(SAMPLE_MATRIX, 'عيادة طلاب الرحمانية');
-  state.pharmacies = [{ id: 'p' + (++pid), name: s.meta.name, area: s.meta.area || '', origName: s.meta.name, origArea: s.meta.area || '', origBudget: s.meta.budget == null ? null : s.meta.budget,
-    fileName: 'نموذج', sheetName: s.sheetName, fromFile: false, cands: mkCands(s.meta),
-    budget: s.meta.budget == null ? null : s.meta.budget, from: s.meta.from, to: s.meta.to, printed: s.meta.printed, rows: s.rows, included: true }];
+  const key = addFile('نموذج', [{ sheetName: s.sheetName, M: s.M }]);
+  state.pharmacies = [{ id: 'p' + (++pid), name: s.meta.name, area: s.meta.area || '', tag: '', origName: s.meta.name, origArea: s.meta.area || '', origTag: '',
+    fileKey: key, fileName: 'نموذج', sheetName: s.sheetName, fromFile: false, hdr: s.hdr, cols: s.cols, manual: false, cands: mkCands(s.meta),
+    from: s.meta.from, to: s.meta.to, printed: s.meta.printed, rows: s.rows, included: true }];
   state.isSample = true;
   state.source = 'نموذج';
   renderAll();
