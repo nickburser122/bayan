@@ -6,6 +6,24 @@ const fmt2 = n => n == null || !isFinite(n) ? '—' : n.toLocaleString('en-US', 
 const fmt0 = n => n == null || !isFinite(n) ? '—' : Math.round(n).toLocaleString('en-US');
 const pct = r => r == null || !isFinite(r) ? '—' : (r * 100).toFixed(1) + '%';
 const nsp = t => '<span class="num">' + t + '</span>';
+const ic = n => '<svg class="ico" aria-hidden="true"><use href="#i-' + n + '"/></svg>';
+const cleanText = s => String(s == null ? '' : s).replace(/[\u200e\u200f\u202a-\u202e]/g, '').replace(/\s+/g, ' ').trim();
+const plainNum = n => n == null || !isFinite(n) ? '' : String(Math.round(n * 100) / 100);
+const emptyCands = () => ({ names: [], areas: [], budgets: [] });
+const sameBudget = (a, b) => (a == null ? null : a) === (b == null ? null : b);
+const baseName = f => String(f || '').replace(/\.[^.]+$/, '').trim();
+function uniqueNames(list){
+  const total = new Map(), seen = new Map(), out = new Map();
+  list.forEach(p => total.set(p.name, (total.get(p.name) || 0) + 1));
+  list.forEach(p => {
+    if (total.get(p.name) > 1){
+      const n = (seen.get(p.name) || 0) + 1;
+      seen.set(p.name, n);
+      out.set(p.id, p.name + ' (' + n + ')');
+    } else out.set(p.id, p.name);
+  });
+  return out;
+}
 const sum = (a, f) => a.reduce((s, r) => s + (f(r) || 0), 0);
 const byCost = (a, b) => b.cost - a.cost;
 const today = () => iso(new Date());
@@ -88,8 +106,9 @@ const areaOf = p => (p.area || '').trim() || 'غير محددة';
 
 function dataset(){
   const out = [];
+  const un = uniqueNames(includedPh());
   includedPh().forEach(p => p.rows.forEach(r => out.push({
-    ...r, pharmacy:p.name, area:areaOf(p), pid:p.id,
+    ...r, pharmacy:un.get(p.id), area:areaOf(p), pid:p.id,
     unit: r.tickets > 0 ? r.cost / r.tickets : null
   })));
   return out;
@@ -175,6 +194,7 @@ function groupModel(){
 
 function pharmModel(){
   const list = state.pharmacies.filter(p => p.included);
+  const un = uniqueNames(list);
   const G = sum(list, phCost);
   const cols = [
     { label:'الصيدلية', kind:'text' }, { label:'المنطقة', kind:'text' }, { label:'الموازنة', kind:'dec' },
@@ -183,7 +203,7 @@ function pharmModel(){
   ];
   const rows = list.map(p => {
     const c = phCost(p), t = phTickets(p);
-    return { type:'row', cells:[p.name, p.area || '', p.budget, t, c, t ? c / t : null, G ? c / G : null, p.budget ? c / p.budget : null] };
+    return { type:'row', cells:[un.get(p.id), p.area || '', p.budget, t, c, t ? c / t : null, G ? c / G : null, p.budget ? c / p.budget : null] };
   });
   const tb = sum(list, p => p.budget), tt = sum(list, phTickets);
   const withB = list.filter(p => p.budget);
@@ -263,8 +283,9 @@ function factsModel(){
   if (ar.length > 1) out.push({ k:'أعلى منطقة', v: ar[0].name, n: fmt2(ar[0].cost), s: pct(ar[0].cost / C) });
   const withB = includedPh().filter(p => p.budget);
   if (withB.length){
+    const un = uniqueNames(includedPh());
     const over = withB.filter(p => phCost(p) > p.budget);
-    if (over.length) out.push({ k:'تجاوز الموازنة', v: over.map(p => p.name).join('، '), n: String(over.length), s: 'من ' + withB.length, warn:true });
+    if (over.length) out.push({ k:'تجاوز الموازنة', v: over.map(p => un.get(p.id)).join('، '), n: String(over.length), s: 'من ' + withB.length, warn:true });
     else out.push({ k:'الموازنة', v:'كل الصيدليات ضمن الموازنة', n: pct(sum(withB, phCost) / sum(withB, p => p.budget)), s:'تنفيذ' });
   }
   return out;
@@ -300,12 +321,10 @@ function renderHero(){
     (meta.length ? '<p class="meta">' + meta.join('<span class="dotsep"></span>') + '</p>' : '') + '</div>';
 }
 
-const ICON_COPY = '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>';
-
 function renderStats(){
   $('#stats').innerHTML = kpiModel().map(c =>
     '<button class="card stat" data-kpi="' + c.id + '" title="نسخ">' +
-      '<span class="cp">' + ICON_COPY + '</span>' +
+      '<span class="cp">' + ic('copy') + '</span>' +
       '<span class="label">' + esc(c.label) + '</span>' +
       '<span class="value"><span class="num">' + fmtKind(c.raw, c.kind) + '</span>' + (c.unit ? '<span class="unit">' + esc(c.unit) + '</span>' : '') + '</span>' +
       '<span class="foot">' + (c.foot ? '<span class="num">' + esc(c.foot) + '</span>' : '') + (c.warn ? '<span class="chip warn">تجاوز</span>' : '') + '</span>' +
@@ -337,53 +356,97 @@ const shareCell = r => {
   return '<span class="share"><span class="share-track"><span class="share-fill" style="width:' + p.toFixed(1) + '%"></span></span><span class="share-val num">' + pct(r) + '</span></span>';
 };
 
+const phChanged = p => p.name !== p.origName || (p.area || '') !== (p.origArea || '') || !sameBudget(p.budget, p.origBudget);
+const restorePh = p => { p.name = p.origName; p.area = p.origArea || ''; p.budget = p.origBudget == null ? null : p.origBudget; };
+const phDisplay = (p, f) => f === 'budget' ? (p.budget != null ? fmt2(p.budget) : '') : f === 'name' ? p.name : (p.area || '');
+
+function phCells(p, G, dup){
+  const c = phCost(p), t = phTickets(p);
+  const over = p.budget && c > p.budget;
+  const nCh = p.name !== p.origName, aCh = (p.area || '') !== (p.origArea || ''), bCh = !sameBudget(p.budget, p.origBudget);
+  const edit = (f, label) => '<span class="edit" contenteditable="true" role="textbox" spellcheck="false" data-p="' + p.id + '" data-f="' + f + '" aria-label="' + label + '"' + (f === 'budget' ? ' inputmode="decimal"' : '') + '>' + esc(phDisplay(p, f)) + '</span>';
+  return [
+    { cls: '', html: '<span class="cellx">' + edit('name', 'اسم الصيدلية') + (dup ? '<span class="chip warn">اسم مكرر</span>' : '') +
+      (nCh || aCh || bCh ? '<button class="tool xs plain" data-restore="' + p.id + '" title="استعادة الأصل" aria-label="استعادة الأصل">' + ic('reset') + '</button>' : '') + '</span>' +
+      (nCh ? '<span class="orig">الأصل: ' + esc(p.origName) + '</span>' : '') },
+    { cls: '', html: edit('area', 'المنطقة') + (aCh ? '<span class="orig">الأصل: ' + esc(p.origArea || '—') + '</span>' : '') },
+    { cls: 'td-num', html: edit('budget', 'الموازنة') +
+      (p.budget ? '<span class="bmeta' + (over ? ' warn' : '') + '">' + pct(c / p.budget) + (over ? ' · تجاوز' : '') + '</span>' : '') +
+      (bCh ? '<span class="orig">الأصل: ' + (p.origBudget != null ? fmt2(p.origBudget) : '—') + '</span>' : '') },
+    { cls: 'td-num', html: fmt0(t) },
+    { cls: 'td-num', html: fmt2(c) },
+    { cls: 'td-num', html: t ? fmt2(c / t) : '—' },
+    { cls: 'td-num', html: p.included && G ? shareCell(c / G) : '<span class="cell-dash">—</span>' },
+    { cls: '', html: '<button class="switch ' + (p.included ? 'on' : 'off') + '" data-toggle="' + p.id + '" aria-pressed="' + (p.included ? 'true' : 'false') + '">' + (p.included ? 'مشمولة' : 'مستبعدة') + '</button>' }
+  ];
+}
+
+function syncRows(tb, rows){
+  const have = new Map([...tb.children].map(tr => [tr.dataset.id, tr]));
+  const active = document.activeElement;
+  rows.forEach((r, i) => {
+    let tr = have.get(r.id);
+    if (!tr){
+      tr = document.createElement('tr');
+      tr.dataset.id = r.id;
+      r.cells.forEach(() => tr.appendChild(document.createElement('td')));
+    }
+    have.delete(r.id);
+    const cur = tb.children[i];
+    if (cur !== tr) tb.insertBefore(tr, cur || null);
+    tr.className = r.cls;
+    r.cells.forEach((c, j) => {
+      const td = tr.children[j];
+      td.className = c.cls;
+      if (td.dataset.sig === c.html) return;
+      const holds = active && active !== document.body && td.contains(active);
+      if (holds && active.classList.contains('edit')) return;
+      const key = holds && (active.dataset.toggle ? '[data-toggle]' : active.dataset.restore ? '[data-restore]' : null);
+      td.innerHTML = c.html;
+      td.dataset.sig = c.html;
+      if (key){ const n = td.querySelector(key); if (n) n.focus(); }
+    });
+  });
+  have.forEach(tr => tr.remove());
+}
+
 function renderPharmacies(){
   const list = state.pharmacies;
   $('#pharm-card').style.display = list.length ? '' : 'none';
   if (!list.length) return;
   const G = sum(includedPh(), phCost);
-  const changed = list.some(p => p.name !== p.origName || (p.area || '') !== (p.origArea || ''));
-  $('#btn-restore-all').hidden = !changed;
-  $('#ph-body').innerHTML = list.map(p => {
-    const c = phCost(p), t = phTickets(p);
-    const over = p.budget && c > p.budget;
-    const nCh = p.name !== p.origName, aCh = (p.area || '') !== (p.origArea || '');
-    return '<tr class="row' + (p.included ? '' : ' excluded') + '">' +
-      '<td><span class="cellx"><span class="edit" contenteditable="true" spellcheck="false" data-p="' + p.id + '" data-f="name">' + esc(p.name) + '</span>' +
-        (nCh || aCh ? '<button class="icon-btn sm plain" data-restore="' + p.id + '" title="استعادة الأصل">↺</button>' : '') + '</span>' +
-        (nCh ? '<span class="orig">الأصل: ' + esc(p.origName) + '</span>' : '') + '</td>' +
-      '<td><span class="edit" contenteditable="true" spellcheck="false" data-p="' + p.id + '" data-f="area">' + esc(p.area) + '</span>' +
-        (aCh ? '<span class="orig">الأصل: ' + esc(p.origArea || '—') + '</span>' : '') + '</td>' +
-      '<td class="td-num"><span class="edit" contenteditable="true" spellcheck="false" data-p="' + p.id + '" data-f="budget">' + (p.budget != null ? fmt2(p.budget) : '') + '</span>' +
-        (p.budget ? '<span class="bmeta">' + pct(c / p.budget) + (over ? ' · تجاوز' : '') + '</span>' : '') + '</td>' +
-      '<td class="td-num">' + fmt0(t) + '</td>' +
-      '<td class="td-num">' + fmt2(c) + '</td>' +
-      '<td class="td-num">' + (t ? fmt2(c / t) : '—') + '</td>' +
-      '<td class="td-num">' + (p.included && G ? shareCell(c / G) : '<span style="color:var(--faint)">—</span>') + '</td>' +
-      '<td><button class="switch ' + (p.included ? 'on' : 'off') + '" data-toggle="' + p.id + '">' + (p.included ? 'مشمولة' : 'مستبعدة') + '</button></td>' +
-    '</tr>';
-  }).join('');
+  const counts = new Map();
+  list.forEach(p => counts.set(p.name, (counts.get(p.name) || 0) + 1));
+  $('#btn-restore-all').hidden = !list.some(phChanged);
+  syncRows($('#ph-body'), list.map(p => ({ id: p.id, cls: 'row' + (p.included ? '' : ' excluded'), cells: phCells(p, G, counts.get(p.name) > 1) })));
 }
+
+const aggFields = a => {
+  const spec = OPS[a.op].f;
+  return spec === 'num' ? MEAS : spec === 'dim' ? DIMS : spec === 'all' ? { ...DIMS, ...MEAS } : null;
+};
+const selBtn = (kind, text, disabled, label) =>
+  '<button type="button" class="fld sel" data-menu="' + kind + '" aria-haspopup="listbox" aria-expanded="false" aria-label="' + label + '"' + (disabled ? ' disabled' : '') + '><span>' + esc(text) + '</span>' + ic('chev-d') + '</button>';
 
 function renderBuilder(){
   const g = state.group;
   const free = Object.keys(DIMS).filter(k => !g.keys.includes(k));
   $('#keys').innerHTML = g.keys.map((k, i) =>
     '<span class="key"><span class="ord num">' + (i + 1) + '</span>' + esc(DIMS[k]) +
-    (i > 0 ? '<button class="chip-btn" data-kmove="' + i + '" data-d="-1" title="تقديم">›</button>' : '') +
-    (i < g.keys.length - 1 ? '<button class="chip-btn" data-kmove="' + i + '" data-d="1" title="تأخير">‹</button>' : '') +
-    '<button class="chip-btn" data-kdel="' + i + '" title="إزالة">✕</button></span>'
-  ).join('') + (free.length ? '<select class="sel" id="key-add" aria-label="إضافة عمود"><option value="">+ عمود</option>' + free.map(k => '<option value="' + k + '">' + DIMS[k] + '</option>').join('') + '</select>' : '') +
+    (i > 0 ? '<button class="chip-x" data-kmove="' + i + '" data-d="-1" title="تقديم" aria-label="تقديم">' + ic('chev-r') + '</button>' : '') +
+    (i < g.keys.length - 1 ? '<button class="chip-x" data-kmove="' + i + '" data-d="1" title="تأخير" aria-label="تأخير">' + ic('chev-l') + '</button>' : '') +
+    '<button class="chip-x" data-kdel="' + i + '" title="إزالة" aria-label="إزالة">' + ic('x') + '</button></span>'
+  ).join('') + (free.length ? '<button type="button" class="tool" id="key-add" data-menu="key-add" aria-haspopup="listbox" aria-expanded="false" aria-label="إضافة عمود">' + ic('plus') + '<span>عمود</span></button>' : '') +
     (g.keys.length ? '' : '<span class="hint">بدون تجميع: صف إجمالي واحد</span>');
 
   $('#aggs').innerHTML = g.aggs.map(a => {
-    const spec = OPS[a.op].f;
-    const fields = spec === 'num' ? MEAS : spec === 'dim' ? DIMS : spec === 'all' ? { ...DIMS, ...MEAS } : null;
+    const fields = aggFields(a);
+    const solo = g.aggs.length < 2;
     return '<div class="agg" data-agg="' + a.id + '">' +
-      '<input class="inp" data-af="label" value="' + esc(a.label) + '" aria-label="اسم العمود">' +
-      '<select data-af="op" aria-label="العملية">' + Object.entries(OPS).map(([k, o]) => '<option value="' + k + '"' + (k === a.op ? ' selected' : '') + '>' + o.label + '</option>').join('') + '</select>' +
-      '<select data-af="field" aria-label="الحقل"' + (fields ? '' : ' disabled') + '>' + (fields ? Object.entries(fields).map(([k, l]) => '<option value="' + k + '"' + (k === a.field ? ' selected' : '') + '>' + l + '</option>').join('') : '<option>—</option>') + '</select>' +
-      '<button class="chip-btn" data-adel="' + a.id + '" title="حذف"' + (g.aggs.length < 2 ? ' disabled style="visibility:hidden"' : '') + '>✕</button>' +
+      '<input class="fld" data-af="label" value="' + esc(a.label) + '" aria-label="اسم العمود">' +
+      selBtn('agg-op', OPS[a.op].label, false, 'العملية') +
+      selBtn('agg-field', fields ? (fields[a.field] || '—') : '—', !fields, 'الحقل') +
+      '<button class="chip-x' + (solo ? ' hidden' : '') + '" data-adel="' + a.id + '" title="حذف" aria-label="حذف"' + (solo ? ' disabled tabindex="-1"' : '') + '>' + ic('x') + '</button>' +
     '</div>';
   }).join('');
 
@@ -399,8 +462,11 @@ function renderBuilder(){
   if (multi) presets.push(['الصيدلية', ['pharmacy']], ['الصيدلية › التخصص', ['pharmacy', 'specialty']]);
   if (areas) presets.push(['المنطقة', ['area']], ['المنطقة › الصيدلية', ['area', 'pharmacy']]);
   presets.push(['تفصيلي', ['specialty', 'doctor', 'type'].concat(multi ? ['pharmacy'] : [])]);
-  $('#presets').innerHTML = '<span class="lbl">جاهز:</span>' + presets.map((p, i) => '<button class="pill" data-preset="' + esc(JSON.stringify(p[1])) + '">' + esc(p[0]) + '</button>').join('') +
-    '<button class="pill" id="btn-reset-aggs" title="العمليات الافتراضية">↺ العمليات</button>';
+  const cur = JSON.stringify(g.keys);
+  $('#presets').innerHTML = '<span class="lbl">جاهز:</span>' + presets.map(p => {
+    const k = JSON.stringify(p[1]);
+    return '<button class="tool' + (k === cur ? ' on' : '') + '" data-preset="' + esc(k) + '">' + esc(p[0]) + '</button>';
+  }).join('') + '<button class="tool" id="btn-reset-aggs" title="العمليات الافتراضية">' + ic('reset') + '<span>العمليات</span></button>';
   $('#opt-sub').checked = g.subtotals;
   $('#sub-toggle').style.display = g.keys.length > 1 ? '' : 'none';
 }
@@ -412,12 +478,12 @@ function renderGroup(){
   const nk = state.group.keys.length;
   $('#g-head').innerHTML = m.cols.map((c, i) =>
     '<th class="sortable' + (c.kind !== 'text' ? ' th-num' : '') + '" data-sort="' + i + '">' + esc(c.label) +
-    (m.sort.col === i ? '<span class="arr">' + (m.sort.dir < 0 ? '▼' : '▲') + '</span>' : '') + '</th>'
+    (m.sort.col === i ? '<span class="arr' + (m.sort.dir > 0 ? ' up' : '') + '">' + ic('chev-d') + '</span>' : '') + '</th>'
   ).join('');
   const cell = (v, c, i, row) => {
     if (c.kind === 'text'){
       const blank = row.type === 'child' && i === 0;
-      return '<td' + (blank ? ' style="color:var(--faint)"' : '') + '>' + (blank ? '' : esc(v)) + (row.type === 'sub' && i === 0 ? '<span class="gcount">' + row.n + '</span>' : '') + '</td>';
+      return '<td' + (blank ? ' class="blank"' : '') + '>' + (blank ? '' : esc(v)) + (row.type === 'sub' && i === 0 ? '<span class="gcount">' + row.n + '</span>' : '') + '</td>';
     }
     if (c.op === 'share') return '<td class="td-num" data-raw="' + esc(rawKind(v, c.kind)) + '">' + shareCell(v) + '</td>';
     return '<td class="td-num" data-raw="' + esc(rawKind(v, c.kind)) + '">' + fmtKind(v, c.kind) + '</td>';
@@ -462,7 +528,7 @@ function toast(msg){
 let noticeTimer;
 function notify(msg, isErr, withUndo){
   clearTimeout(noticeTimer);
-  $('#notice-slot').innerHTML = '<div class="notice' + (isErr ? ' err' : '') + '"><span>' + esc(msg) + '</span>' + (withUndo ? '<button class="undo" id="btn-undo">تراجع</button>' : '') + '</div>';
+  $('#notice-slot').innerHTML = '<div class="notice' + (isErr ? ' err' : '') + '"><span>' + esc(msg) + '</span>' + (withUndo ? '<button class="tool" id="btn-undo">' + ic('reset') + '<span>تراجع</span></button>' : '') + '</div>';
   const u = $('#btn-undo');
   if (u) u.addEventListener('click', () => {
     if (state.prev){ Object.assign(state, state.prev); state.prev = null; renderAll(); }
@@ -700,12 +766,233 @@ function runExport(fmt, ids, title){
   else copy(reportText(ids, title), reportHTML(ids, title), 'تم نسخ التقرير');
 }
 
-function openOverlay(id){ $(id).classList.add('show'); }
-function closeOverlay(el){ (el || $$('.overlay.show').pop())?.classList.remove('show'); }
+let lastFocus = null;
+const FOCUSABLE = 'button:not([disabled]):not([tabindex="-1"]),input:not([disabled]):not([type=hidden]),textarea:not([disabled]),[contenteditable="true"],[href]';
+
+function openOverlay(id){
+  const el = $(id);
+  if (!$$('.overlay.show').length) lastFocus = document.activeElement;
+  el.classList.add('show');
+  setTimeout(() => {
+    const t = el.querySelector('textarea') || el.querySelector('.sheet-f .btn-solid:not([disabled])') || el.querySelector(FOCUSABLE);
+    if (t) t.focus();
+  }, 60);
+}
+function closeOverlay(el){
+  const o = el || $$('.overlay.show').pop();
+  if (!o) return;
+  closeMenu();
+  o.classList.remove('show');
+  if (!$$('.overlay.show').length && lastFocus && document.contains(lastFocus) && lastFocus.focus) lastFocus.focus();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Tab' || menu.open) return;
+  const o = $$('.overlay.show').pop();
+  if (!o) return;
+  const f = [...o.querySelectorAll(FOCUSABLE)].filter(x => x.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (!o.contains(document.activeElement)){ e.preventDefault(); first.focus(); }
+  else if (e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+});
+
+const menuEl = $('#menu');
+const menu = { open: false, anchor: null, items: [], idx: -1, onPick: null, restore: null, navigated: false };
+const isTextAnchor = () => menu.anchor && menu.anchor.matches('input,textarea');
+
+function highlight(i){
+  menu.idx = i;
+  menuEl.querySelectorAll('.menu-item').forEach(b => b.classList.toggle('hi', +b.dataset.i === i));
+  const el = menuEl.querySelector('.menu-item[data-i="' + i + '"]');
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+}
+
+function placeMenu(){
+  const r = (menu.anchor.closest('.combo') || menu.anchor).getBoundingClientRect();
+  const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+  menuEl.style.minWidth = Math.max(140, Math.round(r.width)) + 'px';
+  menuEl.style.maxHeight = '';
+  const below = vh - r.bottom - 12, above = r.top - 12;
+  const want = Math.min(menuEl.scrollHeight + 2, 300);
+  const up = want > below && above > below;
+  const maxH = Math.max(120, Math.min(300, up ? above : below));
+  menuEl.style.maxHeight = maxH + 'px';
+  const w = menuEl.offsetWidth, h = Math.min(menuEl.offsetHeight, maxH);
+  const left = Math.max(8, Math.min(r.right - w, vw - w - 8));
+  menuEl.style.left = left + 'px';
+  menuEl.style.top = Math.max(8, up ? r.top - h - 6 : r.bottom + 6) + 'px';
+}
+
+function openMenu(anchor, spec){
+  closeMenu();
+  const items = (spec.items || []).filter(Boolean);
+  if (!items.some(i => !i.sep)) return;
+  menu.open = true;
+  menu.anchor = anchor;
+  menu.items = items;
+  menu.onPick = spec.onPick;
+  menu.restore = spec.restore || null;
+  menu.navigated = false;
+  menuEl.innerHTML = items.map((it, i) => it.sep ? '<div class="menu-sep"></div>' :
+    '<button type="button" tabindex="-1" class="menu-item' + (it.selected ? ' sel-on' : '') + '" role="option" aria-selected="' + (it.selected ? 'true' : 'false') + '" data-i="' + i + '">' +
+    '<span class="mi-l">' + esc(it.label) + '</span>' + (it.hint ? '<span class="mi-h">' + esc(it.hint) + '</span>' : '') +
+    (it.selected ? ic('check') : '<span class="mi-c"></span>') + '</button>').join('');
+  menuEl.hidden = false;
+  anchor.setAttribute('aria-expanded', 'true');
+  placeMenu();
+  highlight(items.findIndex(i => i.selected));
+}
+
+function closeMenu(){
+  if (!menu.open) return;
+  menu.open = false;
+  menuEl.hidden = true;
+  if (menu.anchor) menu.anchor.setAttribute('aria-expanded', 'false');
+  menu.anchor = null;
+}
+
+function stepMenu(d){
+  const n = menu.items.length;
+  let i = menu.idx;
+  for (let k = 0; k < n; k++){
+    i = (i + d + n) % n;
+    if (i < 0) i += n;
+    if (!menu.items[i].sep) break;
+  }
+  menu.navigated = true;
+  highlight(i);
+}
+
+function pickMenu(i){
+  const it = menu.items[i];
+  if (!it || it.sep) return;
+  const cb = menu.onPick, back = menu.restore;
+  closeMenu();
+  if (cb) cb(it.value, it);
+  if (back) requestAnimationFrame(back);
+}
+
+menuEl.addEventListener('mousedown', e => e.preventDefault());
+menuEl.addEventListener('click', e => {
+  const b = e.target.closest('.menu-item');
+  if (b) pickMenu(+b.dataset.i);
+});
+menuEl.addEventListener('mousemove', e => {
+  const b = e.target.closest('.menu-item');
+  if (b && +b.dataset.i !== menu.idx) highlight(+b.dataset.i);
+});
+document.addEventListener('pointerdown', e => {
+  if (!menu.open) return;
+  if (menuEl.contains(e.target) || (menu.anchor && menu.anchor.contains(e.target))) return;
+  closeMenu();
+}, true);
+window.addEventListener('resize', closeMenu);
+window.addEventListener('scroll', e => { if (menu.open && !menuEl.contains(e.target)) closeMenu(); }, true);
+
+document.addEventListener('keydown', e => {
+  if (menu.open){
+    const k = e.key;
+    if (k === 'ArrowDown' || k === 'ArrowUp'){ e.preventDefault(); stepMenu(k === 'ArrowDown' ? 1 : -1); return; }
+    if ((k === 'Home' || k === 'End') && !isTextAnchor()){ e.preventDefault(); menu.idx = k === 'Home' ? -1 : 0; stepMenu(k === 'Home' ? 1 : -1); return; }
+    if (k === 'Enter' || (k === ' ' && !isTextAnchor())){
+      if (menu.idx >= 0 && (!isTextAnchor() || menu.navigated)){ e.preventDefault(); e.stopPropagation(); pickMenu(menu.idx); }
+      else closeMenu();
+      return;
+    }
+    if (k === 'Escape'){
+      e.preventDefault();
+      e.stopPropagation();
+      const a = menu.anchor;
+      closeMenu();
+      if (a) a.focus();
+      return;
+    }
+    if (k === 'Tab') closeMenu();
+    return;
+  }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  const t = e.target;
+  if (t.matches && t.matches('button[data-menu]')){ e.preventDefault(); t.click(); }
+  else if (t.matches && t.matches('.combo .fld')){
+    const b = t.closest('.combo').querySelector('.combo-btn');
+    if (b){ e.preventDefault(); b.click(); }
+  }
+}, true);
+
+const aggOf = el => state.group.aggs.find(x => x.id === el.closest('[data-agg]').dataset.agg);
+
+function setAggProp(a, prop, value){
+  a[prop] = value;
+  const spec = OPS[a.op].f;
+  if (spec === 'num' && !MEAS[a.field]) a.field = 'cost';
+  if (spec === 'dim' && !DIMS[a.field]) a.field = 'doctor';
+  if (spec === 'all' && !MEAS[a.field] && !DIMS[a.field]) a.field = 'doctor';
+  if (spec === 'none') a.field = null;
+  if (a.auto) a.label = autoLabel(a);
+  savePrefs();
+  renderBuilder();
+  renderGroup();
+}
+
+const menuSpecs = {
+  'key-add'(el){
+    return {
+      items: Object.keys(DIMS).filter(k => !state.group.keys.includes(k)).map(k => ({ value: k, label: DIMS[k] })),
+      onPick: v => { state.group.keys.push(v); state.group.sort = null; savePrefs(); renderBuilder(); renderGroup(); },
+      restore: () => { const b = $('#key-add'); if (b) b.focus(); }
+    };
+  },
+  'agg-op'(el){
+    const a = aggOf(el);
+    return {
+      items: Object.entries(OPS).map(([k, o]) => ({ value: k, label: o.label, selected: k === a.op })),
+      onPick: v => setAggProp(a, 'op', v),
+      restore: () => { const b = $('[data-agg="' + a.id + '"] [data-menu="agg-op"]'); if (b) b.focus(); }
+    };
+  },
+  'agg-field'(el){
+    const a = aggOf(el);
+    const fields = aggFields(a);
+    if (!fields) return null;
+    return {
+      items: Object.entries(fields).map(([k, l]) => ({ value: k, label: l, selected: k === a.field })),
+      onPick: v => setAggProp(a, 'field', v),
+      restore: () => { const b = $('[data-agg="' + a.id + '"] [data-menu="agg-field"]'); if (b) b.focus(); }
+    };
+  },
+  combo(el){
+    const row = el.closest('tr');
+    const f = el.dataset.cf;
+    const it = stage.items[+row.dataset.i];
+    const input = row.querySelector('[data-sf="' + f + '"]');
+    if (!it) return null;
+    return {
+      items: comboItems(it, f),
+      onPick: v => setStageField(+row.dataset.i, f, v),
+      restore: () => input.focus()
+    };
+  }
+};
+
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-menu]');
+  if (!el || el.disabled) return;
+  if (menu.open && menu.anchor === el){ closeMenu(); return; }
+  const make = menuSpecs[el.dataset.menu];
+  const spec = make && make(el);
+  if (spec) openMenu(el, spec);
+});
 
 function renderExport(){
   $('#ex-format').innerHTML = FORMATS.map(f => '<label class="ex-opt' + (exportPrefs.format === f.id ? ' on' : '') + '"><input type="radio" name="exf" value="' + f.id + '"' + (exportPrefs.format === f.id ? ' checked' : '') + '><div><b>' + f.label + '</b><span>' + f.desc + '</span></div></label>').join('');
   $('#ex-sections').innerHTML = SECTIONS.map(s => { const on = exportPrefs.sections.includes(s.id); return '<label class="ex-opt' + (on ? ' on' : '') + '"><input type="checkbox" value="' + s.id + '"' + (on ? ' checked' : '') + '><div><b>' + s.label + '</b><span>' + s.desc + '</span></div></label>'; }).join('');
+  syncExport();
+}
+function syncExport(){
+  $$('#ex-format .ex-opt').forEach(l => l.classList.toggle('on', l.querySelector('input').checked));
+  $$('#ex-sections .ex-opt').forEach(l => l.classList.toggle('on', l.querySelector('input').checked));
   $('#ex-go').textContent = exportPrefs.format === 'copy' ? 'نسخ' : exportPrefs.format === 'print' ? 'طباعة' : 'تنزيل';
 }
 $('#btn-export').addEventListener('click', () => {
@@ -713,8 +1000,8 @@ $('#btn-export').addEventListener('click', () => {
   renderExport();
   openOverlay('#ov-export');
 });
-$('#ex-format').addEventListener('change', e => { exportPrefs.format = e.target.value; renderExport(); });
-$('#ex-sections').addEventListener('change', () => { exportPrefs.sections = $$('#ex-sections input:checked').map(i => i.value); renderExport(); });
+$('#ex-format').addEventListener('change', e => { exportPrefs.format = e.target.value; syncExport(); });
+$('#ex-sections').addEventListener('change', () => { exportPrefs.sections = $$('#ex-sections input:checked').map(i => i.value); syncExport(); });
 $('#ex-go').addEventListener('click', () => {
   const title = $('#ex-title').value.trim();
   exportPrefs.title = title !== metaInfo().title ? title : '';
@@ -757,41 +1044,23 @@ $('#keys').addEventListener('click', e => {
   else return;
   g.sort = null; savePrefs(); renderBuilder(); renderGroup();
 });
-$('#keys').addEventListener('change', e => {
-  if (e.target.id !== 'key-add' || !e.target.value) return;
-  state.group.keys.push(e.target.value);
-  state.group.sort = null; savePrefs(); renderBuilder(); renderGroup();
-});
 $('#aggs').addEventListener('input', e => {
   if (e.target.dataset.af !== 'label') return;
-  const a = state.group.aggs.find(x => x.id === e.target.closest('[data-agg]').dataset.agg);
+  const a = aggOf(e.target);
   a.label = e.target.value || autoLabel(a);
   a.auto = !e.target.value;
   savePrefs(); renderGroup();
 });
-$('#aggs').addEventListener('change', e => {
-  const af = e.target.dataset.af;
-  if (af !== 'op' && af !== 'field') return;
-  const a = state.group.aggs.find(x => x.id === e.target.closest('[data-agg]').dataset.agg);
-  a[af] = e.target.value;
-  const spec = OPS[a.op].f;
-  if (spec === 'num' && !MEAS[a.field]) a.field = 'cost';
-  if (spec === 'dim' && !DIMS[a.field]) a.field = 'doctor';
-  if (spec === 'all' && !MEAS[a.field] && !DIMS[a.field]) a.field = 'doctor';
-  if (spec === 'none') a.field = null;
-  if (a.auto) a.label = autoLabel(a);
-  savePrefs(); renderBuilder(); renderGroup();
-});
 $('#aggs').addEventListener('click', e => {
   const d = e.target.closest('[data-adel]');
-  if (!d) return;
+  if (!d || d.disabled) return;
   state.group.aggs = state.group.aggs.filter(a => a.id !== d.dataset.adel);
   state.group.sort = null; savePrefs(); renderBuilder(); renderGroup();
 });
 $('#btn-add-agg').addEventListener('click', () => {
   state.group.aggs.push(mkAgg('avg', 'cost'));
   savePrefs(); renderBuilder(); renderGroup();
-  const ins = $$('#aggs .agg select[data-af="op"]'); ins[ins.length - 1]?.focus();
+  const ins = $$('#aggs .agg [data-menu="agg-op"]'); ins[ins.length - 1]?.focus();
 });
 $('#presets').addEventListener('click', e => {
   const p = e.target.closest('[data-preset]');
@@ -819,63 +1088,168 @@ $('#g-foot').addEventListener('click', e => {
   if (td && td.dataset.raw) copy(td.dataset.raw, null, 'نُسخ ' + td.dataset.raw);
 });
 
+const insertPlain = text => {
+  const s = getSelection();
+  if (!s.rangeCount) return;
+  const r = s.getRangeAt(0);
+  r.deleteContents();
+  const n = document.createTextNode(text);
+  r.insertNode(n);
+  r.setStartAfter(n);
+  r.collapse(true);
+  s.removeAllRanges();
+  s.addRange(r);
+};
+
+$('#ph-body').addEventListener('focusin', e => {
+  const el = e.target.closest('.edit');
+  if (!el) return;
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+});
 $('#ph-body').addEventListener('focusout', e => {
   const el = e.target.closest('.edit');
   if (!el) return;
   const p = state.pharmacies.find(x => x.id === el.dataset.p);
   if (!p) return;
   const f = el.dataset.f;
-  if (f === 'budget'){ const n = toNum(el.textContent); p.budget = n != null && n >= 0 ? n : null; }
-  else {
-    const v = norm(el.textContent).replace(/\s+/g, ' ').slice(0, 140);
-    p[f] = f === 'name' ? (v || p.origName) : v;
+  let changed = false;
+  if (f === 'budget'){
+    const t = cleanText(norm(el.textContent));
+    if (!t){ if (p.budget != null){ p.budget = null; changed = true; } }
+    else {
+      const n = budgetNumber(t);
+      if (n == null) toast('قيمة الموازنة غير صالحة');
+      else if (n !== p.budget){ p.budget = n; changed = true; }
+    }
+  } else {
+    const v = cleanText(el.textContent).slice(0, 140);
+    if (f === 'name'){ const nv = v || p.origName; if (nv !== p.name){ p.name = nv; changed = true; } }
+    else if (v !== (p.area || '')){ p.area = v; changed = true; }
   }
-  renderAll();
+  el.textContent = phDisplay(p, f);
+  if (changed) setTimeout(renderAll, 0);
 });
-$('#ph-body').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.closest('.edit')){ e.preventDefault(); e.target.blur(); } });
+$('#ph-body').addEventListener('keydown', e => {
+  const el = e.target.closest('.edit');
+  if (!el) return;
+  if (e.key === 'Enter'){ e.preventDefault(); el.blur(); }
+  else if (e.key === 'Escape'){
+    e.preventDefault();
+    e.stopPropagation();
+    const p = state.pharmacies.find(x => x.id === el.dataset.p);
+    if (p) el.textContent = phDisplay(p, el.dataset.f);
+    el.blur();
+  }
+});
+$('#ph-body').addEventListener('beforeinput', e => {
+  const el = e.target.closest('.edit');
+  if (!el) return;
+  if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak'){ e.preventDefault(); return; }
+  if (el.dataset.f === 'budget' && e.data && /[^\d\u0660-\u0669\u06F0-\u06F9.,\u066B\u066C\u060C\s-]/.test(e.data)) e.preventDefault();
+});
+$('#ph-body').addEventListener('paste', e => {
+  const el = e.target.closest('.edit');
+  if (!el) return;
+  e.preventDefault();
+  insertPlain(cleanText((e.clipboardData || window.clipboardData).getData('text')));
+});
+$('#ph-body').addEventListener('drop', e => { if (e.target.closest('.edit')) e.preventDefault(); });
 $('#ph-body').addEventListener('click', e => {
   const t = e.target.closest('[data-toggle]');
   const r = e.target.closest('[data-restore]');
   if (t){ const p = state.pharmacies.find(x => x.id === t.dataset.toggle); if (p){ p.included = !p.included; renderAll(); } }
-  if (r){ const p = state.pharmacies.find(x => x.id === r.dataset.restore); if (p){ p.name = p.origName; p.area = p.origArea || ''; renderAll(); toast('تمت الاستعادة'); } }
+  if (r){ const p = state.pharmacies.find(x => x.id === r.dataset.restore); if (p){ restorePh(p); renderAll(); toast('تمت الاستعادة'); } }
 });
 $('#btn-restore-all').addEventListener('click', () => {
-  state.pharmacies.forEach(p => { p.name = p.origName; p.area = p.origArea || ''; });
+  state.pharmacies.forEach(restorePh);
   renderAll();
-  toast('تمت استعادة الأسماء الأصلية');
+  toast('تمت استعادة الأصل');
 });
 
-const stage = { mode:'import', items:[], nameSrc:'orig', load:'replace', label:'' };
-const baseName = f => String(f || '').replace(/\.[^.]+$/, '').trim();
+const stage = { mode: 'import', items: [], nameSrc: 'orig', budgetSrc: 'orig', load: 'replace', label: '' };
 
-function renderStage(){
-  const areas = [...new Set(state.pharmacies.map(p => p.area).concat(stage.items.map(i => i.area)).filter(Boolean))];
+const knownAreas = () => [...new Set(state.pharmacies.map(p => p.area).concat(stage.items.map(i => i.area)).map(a => cleanText(a)).filter(Boolean))];
+
+function comboItems(it, f){
+  const items = [];
+  const add = (label, hint, value) => {
+    if (label === '' || label == null || items.some(x => !x.sep && x.label === label)) return;
+    items.push({ label, hint, value: value === undefined ? label : value });
+  };
+  const c = it.cands || emptyCands();
+  if (f === 'name'){
+    c.names.forEach(x => add(x.v, x.src));
+    if (it.fromFile && it.fileName) add(baseName(it.fileName), 'اسم الملف');
+    if (it.sheetName) add(it.sheetName, 'اسم الورقة');
+    add(it.origName, 'الأصل');
+    items.forEach(x => { x.selected = x.value === it.name; });
+  } else if (f === 'area'){
+    c.areas.forEach(x => add(x.v, x.src));
+    knownAreas().forEach(a => add(a, 'مستخدمة'));
+    items.forEach(x => { x.selected = x.value === it.area; });
+  } else {
+    c.budgets.forEach(x => add(fmt2(x.v), x.src, x.v));
+    if (it.origBudget != null) add(fmt2(it.origBudget), 'الأصل', it.origBudget);
+    items.forEach(x => { x.selected = x.value === it.budget; });
+    if (items.length) items.push({ sep: true });
+    items.push({ label: 'بدون موازنة', value: null, selected: it.budget == null });
+  }
+  return items;
+}
+
+function comboHTML(it, f){
+  const val = f === 'budget' ? plainNum(it.budget) : (it[f] || '');
+  const orig = f === 'budget' ? plainNum(it.origBudget) : f === 'name' ? it.origName : (it.origArea || '');
+  const labels = { name: 'اسم الصيدلية', area: 'المنطقة', budget: 'الموازنة' };
+  const many = comboItems(it, f).some(x => !x.sep);
+  return '<div class="combo"><input class="fld' + (val !== orig ? ' changed' : '') + (f === 'budget' && it.bad ? ' invalid' : '') + '" data-sf="' + f + '" value="' + esc(val) + '" aria-label="' + labels[f] + '"' +
+    (f === 'budget' ? ' inputmode="decimal" autocomplete="off" placeholder="بدون"' : f === 'area' ? ' placeholder="—" autocomplete="off"' : ' autocomplete="off" title="الأصل: ' + esc(it.origName) + '"') + '>' +
+    (many ? '<button type="button" class="combo-btn" data-menu="combo" data-cf="' + f + '" tabindex="-1" aria-label="اختيار من القيم المكتشفة" aria-haspopup="listbox" aria-expanded="false">' + ic('chev-d') + '</button>' : '') + '</div>';
+}
+
+function stageRow(it, i){
+  const src = it.budget != null && it.budget === it.origBudget && it.meta && it.meta.budgetSrc ? '<span class="fsrc" title="' + esc(it.meta.budgetSrc) + '">من: ' + esc(it.meta.budgetSrc) + '</span>' : '';
+  return '<tr data-i="' + i + '"' + (it.sel ? '' : ' class="off"') + '>' +
+    '<td class="col-sel"><input type="checkbox" data-sf="sel"' + (it.sel ? ' checked' : '') + ' aria-label="تحديد"></td>' +
+    '<td class="src"><b title="' + esc(it.fileName) + '">' + esc(it.fileName) + '</b>' + esc(it.sheetName) + '</td>' +
+    '<td class="cell-name">' + comboHTML(it, 'name') + '</td>' +
+    '<td class="cell-area">' + comboHTML(it, 'area') + '</td>' +
+    '<td class="cell-budget">' + comboHTML(it, 'budget') + src + '</td>' +
+    '<td class="td-num">' + it.rows.length + '</td>' +
+    '<td class="td-num">' + fmt2(sum(it.rows, r => r.cost)) + '</td>' +
+  '</tr>';
+}
+
+function syncStageMeta(){
   const imp = stage.mode === 'import';
-  $('#stage-title').textContent = imp ? 'مراجعة قبل التحميل' : 'الأسماء والمناطق';
-  $('#stage-sub').textContent = imp ? stage.items.length + ' ورقة من ' + stage.label : 'عدّل الاسم والمنطقة أو استعد الأصل.';
-  $('#stage-ok').textContent = imp ? 'تحميل' : 'حفظ';
-  $('#stage-mode-wrap').style.display = imp && !state.isSample && state.pharmacies.length ? '' : 'none';
-  $$('#stage-namesrc button').forEach(b => b.classList.toggle('active', b.dataset.v === stage.nameSrc));
-  $$('#stage-mode button').forEach(b => b.classList.toggle('active', b.dataset.v === stage.load));
-  $('#stage-namesrc button[data-v="orig"]').textContent = imp ? 'المكتشف' : 'الأصلي';
-  $('#stage-body').innerHTML = stage.items.map((it, i) =>
-    '<tr data-i="' + i + '">' +
-      '<td><input type="checkbox" data-sf="sel"' + (it.sel ? ' checked' : '') + ' aria-label="تحديد"></td>' +
-      '<td class="src"><b title="' + esc(it.fileName) + '">' + esc(it.fileName) + '</b>' + esc(it.sheetName) + '</td>' +
-      '<td><input class="inp' + (it.name !== it.origName ? ' changed' : '') + '" data-sf="name" value="' + esc(it.name) + '" title="الأصل: ' + esc(it.origName) + '"></td>' +
-      '<td><input class="inp' + ((it.area || '') !== (it.origArea || '') ? ' changed' : '') + '" data-sf="area" value="' + esc(it.area) + '" list="areas-list" placeholder="—"></td>' +
-      '<td class="td-num">' + it.rows.length + '</td>' +
-      '<td class="td-num">' + fmt2(sum(it.rows, r => r.cost)) + '</td>' +
-    '</tr>'
-  ).join('') + '';
-  let dl = $('#areas-list');
-  if (!dl){ dl = document.createElement('datalist'); dl.id = 'areas-list'; document.body.appendChild(dl); }
-  dl.innerHTML = areas.map(a => '<option value="' + esc(a) + '">').join('');
   const n = stage.items.filter(i => i.sel).length;
-  $('#stage-all').checked = n === stage.items.length;
-  $('#stage-all').indeterminate = n > 0 && n < stage.items.length;
+  const all = $('#stage-all');
+  all.checked = n === stage.items.length && n > 0;
+  all.indeterminate = n > 0 && n < stage.items.length;
   $('#stage-count').textContent = n + ' / ' + stage.items.length + ' محددة';
   $('#stage-ok').disabled = imp && !n;
+}
+
+function renderStage(){
+  const imp = stage.mode === 'import';
+  $('#stage-title').textContent = imp ? 'مراجعة قبل التحميل' : 'بيانات الصيدليات';
+  $('#stage-sub').textContent = imp ? stage.items.length + ' ورقة من ' + stage.label : 'عدّل الاسم والمنطقة والموازنة أو استعد الأصل.';
+  $('#stage-ok').textContent = imp ? 'تحميل' : 'حفظ';
+  $('#stage-note').textContent = imp
+    ? 'اختر الاسم والموازنة من القيم المكتشفة في الملف أو اكتبهما. الأصل محفوظ ويمكن استعادته لاحقًا من جدول الصيدليات.'
+    : 'حدّد الصفوف لتطبيق الإعدادات الجماعية عليها. التغييرات تُحفظ عند الضغط على «حفظ» والأصل يبقى محفوظًا.';
+  $('#stage-mode-wrap').style.display = imp && !state.isSample && state.pharmacies.length ? '' : 'none';
+  $$('#stage-namesrc button').forEach(b => b.classList.toggle('active', b.dataset.v === stage.nameSrc));
+  $$('#stage-budgetsrc button').forEach(b => b.classList.toggle('active', b.dataset.v === stage.budgetSrc));
+  $$('#stage-mode button').forEach(b => b.classList.toggle('active', b.dataset.v === stage.load));
+  $('#stage-namesrc button[data-v="orig"]').textContent = imp ? 'المكتشف' : 'الأصلي';
+  $('#stage-budgetsrc button[data-v="orig"]').textContent = imp ? 'المكتشفة' : 'الأصلية';
+  $('#stage-body').innerHTML = stage.items.map(stageRow).join('');
+  syncStageMeta();
 }
 
 function openStage(mode, items, label){
@@ -883,74 +1257,157 @@ function openStage(mode, items, label){
   stage.items = items;
   stage.label = label || '';
   stage.nameSrc = 'orig';
+  stage.budgetSrc = 'orig';
   stage.load = 'replace';
   $('#stage-area').value = '';
+  closeMenu();
   renderStage();
   openOverlay('#ov-stage');
 }
 
+function markChanged(it, f, inp){
+  const ch = f === 'budget' ? !sameBudget(it.budget, it.origBudget) : f === 'name' ? it.name !== it.origName : (it.area || '') !== (it.origArea || '');
+  inp.classList.toggle('changed', ch && !(f === 'budget' && it.bad));
+  if (f === 'budget') inp.classList.toggle('invalid', !!it.bad);
+}
+
+function setStageField(i, f, v){
+  const it = stage.items[i];
+  if (!it) return;
+  if (f === 'budget'){ it.budget = v; it.bad = false; } else it[f] = v;
+  const inp = $('#stage-body tr[data-i="' + i + '"] [data-sf="' + f + '"]');
+  if (!inp) return;
+  inp.value = f === 'budget' ? plainNum(v) : v;
+  markChanged(it, f, inp);
+}
+
 $('#stage-body').addEventListener('input', e => {
   const f = e.target.dataset.sf;
-  const it = stage.items[+e.target.closest('tr').dataset.i];
+  const tr = e.target.closest('tr');
+  const it = tr && stage.items[+tr.dataset.i];
   if (!it || !f) return;
-  if (f === 'sel'){ it.sel = e.target.checked; renderStage(); return; }
-  it[f] = e.target.value;
-  e.target.classList.toggle('changed', f === 'name' ? it.name !== it.origName : (it.area || '') !== (it.origArea || ''));
+  if (f === 'sel'){ it.sel = e.target.checked; tr.classList.toggle('off', !it.sel); syncStageMeta(); return; }
+  closeMenu();
+  if (f === 'budget'){
+    const t = cleanText(norm(e.target.value));
+    if (!t){ it.budget = null; it.bad = false; }
+    else {
+      const n = budgetNumber(t);
+      if (n == null) it.bad = true;
+      else { it.budget = n; it.bad = false; }
+    }
+  } else it[f] = e.target.value;
+  markChanged(it, f, e.target);
 });
-$('#stage-all').addEventListener('change', e => { stage.items.forEach(i => { i.sel = e.target.checked; }); renderStage(); });
+$('#stage-body').addEventListener('focusout', e => {
+  const f = e.target.dataset && e.target.dataset.sf;
+  if (!f || f === 'sel' || f === 'budget') return;
+  const it = stage.items[+e.target.closest('tr').dataset.i];
+  if (!it) return;
+  it[f] = cleanText(e.target.value);
+  e.target.value = it[f];
+  markChanged(it, f, e.target);
+});
+$('#stage-all').addEventListener('change', e => {
+  stage.items.forEach(i => { i.sel = e.target.checked; });
+  $$('#stage-body tr').forEach(tr => {
+    tr.classList.toggle('off', !e.target.checked);
+    tr.querySelector('[data-sf="sel"]').checked = e.target.checked;
+  });
+  syncStageMeta();
+});
 $('#stage-namesrc').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
   stage.nameSrc = b.dataset.v;
   stage.items.forEach(it => {
     if (!it.sel) return;
-    it.name = stage.nameSrc === 'file' ? baseName(it.fileName) || it.origName : stage.nameSrc === 'sheet' ? it.sheetName || it.origName : it.origName;
+    it.name = stage.nameSrc === 'file' && it.fromFile ? baseName(it.fileName) || it.origName : stage.nameSrc === 'sheet' ? it.sheetName || it.origName : it.origName;
     if (stage.nameSrc === 'orig') it.area = it.origArea || '';
   });
   renderStage();
 });
+$('#stage-budgetsrc').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  stage.budgetSrc = b.dataset.v;
+  stage.items.forEach(it => {
+    if (!it.sel) return;
+    it.budget = stage.budgetSrc === 'none' ? null : (it.origBudget == null ? null : it.origBudget);
+    it.bad = false;
+  });
+  renderStage();
+});
 $('#stage-area-apply').addEventListener('click', () => {
-  const v = $('#stage-area').value.trim();
+  const v = cleanText($('#stage-area').value);
   stage.items.forEach(it => { if (it.sel) it.area = v; });
   renderStage();
 });
 $('#stage-area').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); $('#stage-area-apply').click(); } });
 $('#stage-mode').addEventListener('click', e => { const b = e.target.closest('button'); if (b){ stage.load = b.dataset.v; renderStage(); } });
+
 $('#stage-ok').addEventListener('click', () => {
-  if (stage.mode === 'edit'){
-    stage.items.forEach(it => {
+  const edit = stage.mode === 'edit';
+  const chosen = edit ? stage.items : stage.items.filter(i => i.sel);
+  if (!chosen.length) return;
+  const bad = chosen.find(i => i.bad);
+  if (bad){
+    const inp = $('#stage-body tr[data-i="' + stage.items.indexOf(bad) + '"] [data-sf="budget"]');
+    if (inp) inp.focus();
+    toast('تحقق من قيمة الموازنة');
+    return;
+  }
+  const nm = it => cleanText(it.name).slice(0, 140) || it.origName;
+  if (edit){
+    chosen.forEach(it => {
       const p = state.pharmacies.find(x => x.id === it.pid);
-      if (p){ p.name = (it.name || '').trim() || p.origName; p.area = (it.area || '').trim(); }
+      if (p){ p.name = nm(it); p.area = cleanText(it.area); p.budget = it.budget == null ? null : it.budget; }
     });
     closeOverlay($('#ov-stage'));
     renderAll();
     toast('تم الحفظ');
     return;
   }
-  const chosen = stage.items.filter(i => i.sel);
-  if (!chosen.length) return;
   const append = stage.load === 'append' && !state.isSample;
   commit(chosen.map(it => ({
-    id:'p' + (++pid), name:(it.name || '').trim() || it.origName, area:(it.area || '').trim(),
-    origName:it.origName, origArea:it.origArea || '', fileName:it.fileName, sheetName:it.sheetName,
-    budget:it.meta.budget, from:it.meta.from, to:it.meta.to, printed:it.meta.printed, rows:it.rows, included:true
+    id: 'p' + (++pid), name: nm(it), area: cleanText(it.area),
+    origName: it.origName, origArea: it.origArea || '', origBudget: it.origBudget == null ? null : it.origBudget,
+    fileName: it.fileName, sheetName: it.sheetName, fromFile: it.fromFile, cands: it.cands,
+    budget: it.budget == null ? null : it.budget, from: it.meta.from, to: it.meta.to, printed: it.meta.printed, rows: it.rows, included: true
   })), stage.label, append);
   closeOverlay($('#ov-stage'));
 });
 $('#btn-edit-names').addEventListener('click', () => {
   openStage('edit', state.pharmacies.map(p => ({
-    sel:true, pid:p.id, fileName:p.fileName || '—', sheetName:p.sheetName || '', origName:p.origName, origArea:p.origArea || '',
-    name:p.name, area:p.area || '', rows:p.rows, meta:{}
+    sel: true, pid: p.id, fileName: p.fileName || '—', sheetName: p.sheetName || '', fromFile: !!p.fromFile,
+    origName: p.origName, origArea: p.origArea || '', origBudget: p.origBudget == null ? null : p.origBudget,
+    name: p.name, area: p.area || '', budget: p.budget == null ? null : p.budget,
+    rows: p.rows, meta: {}, cands: p.cands || emptyCands()
   })));
 });
 
 function commit(list, label, append){
-  state.prev = { pharmacies:state.pharmacies, isSample:state.isSample, source:state.source };
+  state.prev = { pharmacies: state.pharmacies, isSample: state.isSample, source: state.source };
   state.pharmacies = append ? state.pharmacies.concat(list) : list;
   state.isSample = false;
   state.source = append && state.source ? state.source + ' + ' + label : label;
   renderAll();
   notify('تم تحميل ' + phLabel(list.length) + (append ? ' (إضافة)' : '') + '.', false, true);
+}
+
+function mkCands(meta){
+  const names = (meta.nameCands || []).slice();
+  if (!names.some(c => c.v === meta.name)) names.unshift({ v: meta.name, src: 'المكتشف' });
+  return { names, areas: (meta.areaCands || []).slice(), budgets: (meta.budgetCands || []).slice() };
+}
+
+function stageItem(meta, rows, fileName, sheetName, fromFile){
+  return {
+    sel: true, fileName, sheetName, fromFile,
+    origName: meta.name, origArea: meta.area || '', origBudget: meta.budget == null ? null : meta.budget,
+    name: meta.name, area: meta.area || '', budget: meta.budget == null ? null : meta.budget,
+    rows, meta, cands: mkCands(meta)
+  };
 }
 
 function readFiles(input){
@@ -964,7 +1421,7 @@ function readFiles(input){
       if (o.error){ failed.push(o.name); return; }
       o.sheets.forEach(s => {
         if (!s.ok){ skipped++; return; }
-        items.push({ sel:true, fileName:o.name, sheetName:s.sheetName, origName:s.meta.name, origArea:s.meta.area || '', name:s.meta.name, area:s.meta.area || '', rows:s.rows, meta:s.meta });
+        items.push(stageItem(s.meta, s.rows, o.name, s.sheetName, true));
       });
     });
     if (!items.length){ notify('لم يُعثر على جدول مطابق' + (failed.length ? ' · تعذر قراءة: ' + failed.join('، ') : '') + '.', true); return; }
@@ -977,13 +1434,18 @@ function readFiles(input){
 $('#btn-file').addEventListener('click', () => $('#file-input').click());
 $('#file-input').addEventListener('change', e => { const fs = [...e.target.files]; e.target.value = ''; readFiles(fs); });
 
-$('#btn-paste').addEventListener('click', () => { openOverlay('#ov-paste'); setTimeout(() => $('#paste-area').focus(), 100); });
+$('#btn-paste').addEventListener('click', () => openOverlay('#ov-paste'));
 $('#paste-area').addEventListener('keydown', e => {
-  if (e.key !== 'Tab') return;
-  e.preventDefault();
-  const t = e.target, s = t.selectionStart;
-  t.value = t.value.slice(0, s) + '\t' + t.value.slice(t.selectionEnd);
-  t.selectionStart = t.selectionEnd = s + 1;
+  if (e.key === 'Tab'){
+    e.preventDefault();
+    e.stopPropagation();
+    const t = e.target, s = t.selectionStart;
+    t.value = t.value.slice(0, s) + '\t' + t.value.slice(t.selectionEnd);
+    t.selectionStart = t.selectionEnd = s + 1;
+  } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)){
+    e.preventDefault();
+    $('#btn-parse').click();
+  }
 });
 $('#btn-parse').addEventListener('click', () => {
   const res = parsePasteText($('#paste-area').value);
@@ -996,19 +1458,20 @@ $('#btn-parse').addEventListener('click', () => {
   err.style.display = 'none';
   closeOverlay($('#ov-paste'));
   $('#paste-area').value = '';
-  openStage('import', [{ sel:true, fileName:'لصق', sheetName:'', origName:res.meta.name, origArea:res.meta.area || '', name:res.meta.name, area:res.meta.area || '', rows:res.rows, meta:res.meta }], 'بيانات ملصوقة');
+  openStage('import', [stageItem(res.meta, res.rows, 'لصق', '', false)], 'بيانات ملصوقة');
 });
 
 let dragDepth = 0;
 document.addEventListener('dragenter', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')){ dragDepth++; document.body.classList.add('dragging'); } });
 document.addEventListener('dragleave', () => { if (--dragDepth <= 0){ dragDepth = 0; document.body.classList.remove('dragging'); } });
 document.addEventListener('dragover', e => e.preventDefault());
-document.addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging'); if (e.dataTransfer) readFiles(e.dataTransfer.files); });
+document.addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging'); if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) readFiles(e.dataTransfer.files); });
 
 (function boot(){
   const s = parseMatrix(SAMPLE_MATRIX, 'عيادة طلاب الرحمانية');
-  state.pharmacies = [{ id:'p' + (++pid), name:s.meta.name, area:s.meta.area || '', origName:s.meta.name, origArea:s.meta.area || '', fileName:'نموذج', sheetName:s.sheetName,
-    budget:s.meta.budget, from:s.meta.from, to:s.meta.to, printed:s.meta.printed, rows:s.rows, included:true }];
+  state.pharmacies = [{ id: 'p' + (++pid), name: s.meta.name, area: s.meta.area || '', origName: s.meta.name, origArea: s.meta.area || '', origBudget: s.meta.budget == null ? null : s.meta.budget,
+    fileName: 'نموذج', sheetName: s.sheetName, fromFile: false, cands: mkCands(s.meta),
+    budget: s.meta.budget == null ? null : s.meta.budget, from: s.meta.from, to: s.meta.to, printed: s.meta.printed, rows: s.rows, included: true }];
   state.isSample = true;
   state.source = 'نموذج';
   renderAll();

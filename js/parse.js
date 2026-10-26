@@ -85,32 +85,112 @@ function findHeaderRow(M){
   return best;
 }
 
-function neighborValue(row, c){
-  const LABEL = /^(الي|إلى|من|فترة|الفترة|تاريخ|الطباعة|اسم|الصيدلية|المنطقة|الموازنة|الميزانية|موازنة|ميزانية|صيدلية|جنيه|ج\.م)$/;
-  for (let d = 1; d < row.length + 2; d++){
-    const rv = row[c + d], lv = row[c - d];
-    if (rv != null && norm(rv) !== '' && !LABEL.test(norm(rv))) return rv;
-    if (lv != null && norm(lv) !== '' && !LABEL.test(norm(lv))) return lv;
+const LABEL_WORDS = /^(الي|إلى|من|فترة|الفترة|تاريخ|الطباعة|اسم|الصيدلية|المنطقة|الموازنة|الميزانية|موازنة|ميزانية|صيدلية|جنيه|ج\.م)$/;
+const RE_NAME_LABEL = /اسم\s*الصيدلية|^الصيدلية$|^صيدلية$/;
+const RE_AREA_LABEL = /المنطقة|منطقة/;
+const RE_BUDGET_LABEL = /الموازنة|الميزانية|موازنة|ميزانية/;
+const RE_NAMEISH = /صيدلية|عيادة|مركز|وحدة صحية/;
+const RE_NOISE = /التكلفة|الفترة|الفتره|الطباعة|الهيئة/;
+const RE_CURRENCY = /\s*(جنيها?(\s*مصريا?)?|ج\s*\.?\s*م\.?|EGP|LE)\s*$/i;
+const RE_TOTAL = /(إجمالي|اجمالي|الإجمالي|الاجمالي)/;
+const NEIGHBOR_SPAN = 6;
+
+const isDateText = t => RE_DATE_YMD.test(t) || RE_DATE_DMY.test(t);
+
+function splitLabel(t){
+  const m = /^([^:：]{1,40})[:：]\s*(.+)$/.exec(t);
+  return m ? { label: m[1].trim(), value: m[2].trim() } : null;
+}
+
+function budgetNumber(v){
+  if (v == null || v instanceof Date) return null;
+  if (typeof v === 'number') return isFinite(v) && v >= 0 ? v : null;
+  const t = norm(v).replace(RE_CURRENCY, '').trim();
+  if (!t || isDateText(t)) return null;
+  if (!/^[+\-]?[\d.,\u066B\u066C\u060C\s]+$/.test(t)) return null;
+  const n = toNum(t);
+  return n != null && n >= 0 ? n : null;
+}
+
+function neighborText(row, c){
+  for (let d = 1; d <= NEIGHBOR_SPAN; d++){
+    for (const x of [row[c + d], row[c - d]]){
+      if (x == null || x instanceof Date) continue;
+      const t = norm(x);
+      if (t && !LABEL_WORDS.test(t) && !isDateText(t) && budgetNumber(x) == null) return t;
+    }
   }
   return null;
 }
 
+function neighborNumber(row, c){
+  for (let d = 1; d <= NEIGHBOR_SPAN; d++){
+    for (const x of [row[c + d], row[c - d]]){
+      const n = budgetNumber(x);
+      if (n != null) return n;
+    }
+  }
+  return null;
+}
+
+function pushCand(list, v, src, key){
+  if (v == null || v === '') return;
+  if (list.some(x => x.v === v && x.key === key)) return;
+  const c = { v, src };
+  if (key != null) c.key = key;
+  list.push(c);
+}
+
+function scanLabels(M, r0, r1, out, srcOf, budgetsOnly){
+  for (let r = r0; r < r1; r++){
+    const row = M[r] || [];
+    for (let c = 0; c < row.length; c++){
+      const v = row[c];
+      if (isBlank(v) || v instanceof Date || typeof v === 'number') continue;
+      const t = norm(v);
+      const sl = splitLabel(t);
+      const lab = sl ? sl.label : t;
+      if (!sl && t.length > 30) continue;
+      if (RE_BUDGET_LABEL.test(lab)){
+        const n = sl ? budgetNumber(sl.value) : null;
+        pushCand(out.budgets, n != null ? n : neighborNumber(row, c), srcOf(lab));
+        continue;
+      }
+      if (budgetsOnly) continue;
+      if (RE_NAME_LABEL.test(lab)){
+        pushCand(out.names, (sl && sl.value) || neighborText(row, c), srcOf(lab));
+        continue;
+      }
+      if (RE_AREA_LABEL.test(lab) && !/صيدلية|عيادة/.test(lab)){
+        pushCand(out.areas, (sl && sl.value) || neighborText(row, c), srcOf(lab));
+      }
+    }
+  }
+}
+
 function scanMeta(M, hdr, sheetName){
-  const meta = { org: null, name: null, area: null, budget: null, printed: null, from: null, to: null };
-  const genericDates = [];
+  const meta = { org: null, printed: null, from: null, to: null };
+  const found = { names: [], areas: [], budgets: [] };
+  scanLabels(M, 0, hdr, found, lab => lab, false);
+  scanLabels(M, hdr + 1, M.length, found, lab => lab, true);
+  const nameish = [], loose = [], genericDates = [];
   for (let r = 0; r < hdr; r++){
     const row = M[r] || [];
     const rowText = row.map(norm).join(' ');
     for (let c = 0; c < row.length; c++){
       const v = row[c];
       if (isBlank(v)) continue;
-      const t = norm(v);
       if (v instanceof Date){
         if (/الطباعة/.test(rowText)) { if (!meta.printed) meta.printed = v; }
         else genericDates.push(v);
         continue;
       }
-      if (RE_DATE_YMD.test(t) || RE_DATE_DMY.test(t)){
+      if (typeof v === 'number'){
+        if (v >= 10000 && loose.length < 4) loose.push(v);
+        continue;
+      }
+      const t = norm(v);
+      if (isDateText(t)){
         const d = parseDateStr(t);
         if (d){
           if (/الطباعة/.test(rowText)) { if (!meta.printed) meta.printed = d; }
@@ -119,10 +199,15 @@ function scanMeta(M, hdr, sheetName){
         continue;
       }
       if (!meta.org && /الهيئة|وزارة|مديرية/.test(t) && !/التكلفة/.test(t)) { meta.org = t; continue; }
-      if (/اسم\s*الصيدلية|^الصيدلية$/.test(t)){ const nb = neighborValue(row, c); if (nb != null && !meta.name) meta.name = norm(nb); continue; }
-      if (/المنطقة|منطقة/.test(t) && !/صيدلية|عيادة/.test(t)){ const nb = neighborValue(row, c); if (nb != null && !meta.area) meta.area = norm(nb); continue; }
-      if (/الموازنة|الميزانية|موازنة|ميزانية/.test(t)){ const nb = neighborValue(row, c); const n = toNum(nb); if (n != null && !meta.budget) meta.budget = n; continue; }
-      if (!meta.name && t.length > 5 && /صيدلية|عيادة|مركز|وحدة صحية/.test(t) && !/التكلفة|الفترة|الفتره|الطباعة|الهيئة/.test(t) && !/^(اسم|المنطقة|الموازنة)/.test(t)) meta.name = t;
+      const sl = splitLabel(t);
+      const lab = sl ? sl.label : t;
+      if (RE_NAME_LABEL.test(lab) || RE_BUDGET_LABEL.test(lab) || (RE_AREA_LABEL.test(lab) && !/صيدلية|عيادة/.test(lab))) continue;
+      if (/^\d[\d.,\s]*$/.test(t)){
+        const n = budgetNumber(t);
+        if (n != null && n >= 10000 && loose.length < 4) loose.push(n);
+        continue;
+      }
+      if (t.length > 5 && RE_NAMEISH.test(t) && !RE_NOISE.test(t) && !/^(اسم|المنطقة|الموازنة)/.test(t)) pushCand(nameish, t, 'الترويسة');
     }
   }
   if (genericDates.length){
@@ -130,11 +215,44 @@ function scanMeta(M, hdr, sheetName){
     if (ds.length >= 2){ meta.from = ds[0]; meta.to = ds[ds.length - 1]; }
     else if (!meta.printed) meta.printed = ds[0];
   }
-  if (!meta.name) meta.name = sheetName && !/^(sheet|ورقة|ورقه)/i.test(sheetName) ? sheetName : 'صيدلية بدون اسم';
+  const nameCands = [];
+  found.names.forEach(c => pushCand(nameCands, c.v, c.src));
+  nameish.forEach(c => pushCand(nameCands, c.v, c.src));
+  const budgetCands = [];
+  found.budgets.forEach(c => pushCand(budgetCands, c.v, c.src));
+  loose.forEach(n => pushCand(budgetCands, n, 'رقم في الترويسة'));
+  const fallback = sheetName && !/^(sheet|ورقة|ورقه)/i.test(sheetName) ? sheetName : 'صيدلية بدون اسم';
   return {
-    org: meta.org, name: meta.name, area: meta.area, budget: meta.budget,
-    printed: iso(meta.printed), from: iso(meta.from), to: iso(meta.to)
+    org: meta.org,
+    name: nameCands.length ? nameCands[0].v : fallback,
+    area: found.areas.length ? found.areas[0].v : null,
+    budget: found.budgets.length ? found.budgets[0].v : null,
+    budgetSrc: found.budgets.length ? found.budgets[0].src : null,
+    printed: iso(meta.printed), from: iso(meta.from), to: iso(meta.to),
+    nameCands, areaCands: found.areas, budgetCands
   };
+}
+
+const sameName = (a, b) => {
+  const f = s => norm(s).replace(/\s+/g, ' ').replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').toLowerCase();
+  const x = f(a), y = f(b);
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+};
+
+function sheetPairs(M){
+  const out = [];
+  M.forEach(row => {
+    const texts = [], nums = [];
+    (row || []).forEach(v => {
+      if (isBlank(v) || v instanceof Date) return;
+      const n = budgetNumber(v);
+      if (n != null){ nums.push(n); return; }
+      const t = norm(v);
+      if (t.length > 2 && !isDateText(t) && !RE_TOTAL.test(t) && !RE_BUDGET_LABEL.test(t)) texts.push(t);
+    });
+    if (texts.length && nums.length) out.push({ key: texts[0], v: Math.max(...nums) });
+  });
+  return out;
 }
 
 function mapColumns(M, hdr){
@@ -197,13 +315,13 @@ function extractRows(M, hdr, cols){
     const present = row.filter(v => !isBlank(v));
     if (!present.length){ fs = fd = ft = ''; continue; }
     const joined = row.map(norm).join(' ');
-    if (/(إجمالي|اجمالي|الإجمالي|الاجمالي)/.test(joined)) continue;
+    if (RE_TOTAL.test(joined)) continue;
     if (/التخصص/.test(joined) && /التذكرة/.test(joined)){ fs = fd = ft = ''; continue; }
     const sp = cols.spec >= 0 ? norm(row[cols.spec]) : '';
     const dc = cols.doc >= 0 ? norm(row[cols.doc]) : '';
     const ty = cols.type >= 0 ? norm(row[cols.type]) : '';
-    if (sp) fs = sp;
-    if (dc) fd = dc;
+    if (sp){ if (sp !== fs){ fd = ''; ft = ''; } fs = sp; }
+    if (dc){ if (dc !== fd) ft = ''; fd = dc; }
     if (ty) ft = ty;
     let cost = null, tk = null;
     if (cols.pair != null){
@@ -258,9 +376,38 @@ function filledMatrix(ws){
 }
 
 function parseWorkbook(wb){
-  const res = wb.SheetNames.map(sn => parseMatrix(filledMatrix(wb.Sheets[sn]), sn));
-  if (!res.some(r => r.ok && r.paired)) return res;
-  return res.map(r => r.ok && !r.paired ? { ok: false, sheetName: r.sheetName, reason: 'derived' } : r);
+  const mats = wb.SheetNames.map(sn => ({ sn, M: filledMatrix(wb.Sheets[sn]) }));
+  let res = mats.map(m => parseMatrix(m.M, m.sn));
+  if (res.some(r => r.ok && r.paired)) res = res.map(r => r.ok && !r.paired ? { ok: false, sheetName: r.sheetName, reason: 'derived' } : r);
+  const side = [];
+  mats.forEach((m, i) => {
+    if (res[i].ok) return;
+    const tm = trimEdges(m.M);
+    if (!tm.length) return;
+    const lab = { names: [], areas: [], budgets: [] };
+    scanLabels(tm, 0, tm.length, lab, () => 'ورقة «' + m.sn + '»', false);
+    side.push({ sn: m.sn, lab, pairs: sheetPairs(tm), budgetSheet: /موازن|ميزان/.test(m.sn) });
+  });
+  res.forEach(r => {
+    if (!r.ok) return;
+    const meta = r.meta;
+    side.forEach(s => {
+      s.lab.names.forEach(c => pushCand(meta.nameCands, c.v, c.src));
+      s.lab.budgets.forEach(c => pushCand(meta.budgetCands, c.v, c.src));
+      s.pairs.forEach(p => pushCand(meta.budgetCands, p.v, 'ورقة «' + s.sn + '» · ' + p.key, p.key));
+    });
+    if (meta.budget == null){
+      for (const s of side){
+        const hit = s.pairs.find(p => sameName(p.key, meta.name));
+        if (hit){ meta.budget = hit.v; meta.budgetSrc = 'ورقة «' + s.sn + '» · ' + hit.key; break; }
+      }
+    }
+    if (meta.budget == null){
+      const only = side.filter(s => s.budgetSheet && s.lab.budgets.length === 1);
+      if (only.length === 1){ meta.budget = only[0].lab.budgets[0].v; meta.budgetSrc = only[0].lab.budgets[0].src; }
+    }
+  });
+  return res;
 }
 
 function readOne(file){
