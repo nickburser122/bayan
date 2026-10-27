@@ -39,10 +39,10 @@
       <span class="tag">تقارير التكلفة</span>
     </div>
     <div class="actions">
-      <button class="btn btn-ghost" id="btn-paste"><svg class="ico"><use href="#i-paste"/></svg><span>لصق</span></button>
-      <button class="btn btn-soft" id="btn-file"><svg class="ico"><use href="#i-upload"/></svg><span>رفع ملفات</span></button>
-      <button class="btn btn-ghost" id="btn-copy-report" title="نسخ التقرير كنص"><svg class="ico"><use href="#i-copy"/></svg><span>نسخ التقرير</span></button>
-      <button class="btn btn-solid" id="btn-export"><svg class="ico"><use href="#i-download"/></svg><span>تصدير</span></button>
+      <button class="btn btn-ghost" id="btn-paste" aria-label="لصق بيانات"><svg class="ico"><use href="#i-paste"/></svg><span>لصق</span></button>
+      <button class="btn btn-soft" id="btn-file" aria-label="رفع ملفات"><svg class="ico"><use href="#i-upload"/></svg><span>رفع ملفات</span></button>
+      <button class="btn btn-ghost" id="btn-copy-report" title="نسخ التقرير كنص" aria-label="نسخ التقرير"><svg class="ico"><use href="#i-copy"/></svg><span>نسخ التقرير</span></button>
+      <button class="btn btn-solid" id="btn-export" aria-label="تصدير"><svg class="ico"><use href="#i-download"/></svg><span>تصدير</span></button>
       <input type="file" id="file-input" accept=".xlsx,.xls,.xlsm" multiple hidden>
     </div>
   </div>
@@ -109,8 +109,8 @@
       <label class="fcell"><span>التكلفة إلى</span><input class="fld" id="f-cmax" inputmode="decimal" autocomplete="off"></label>
       <label class="fcell"><span>التذاكر من</span><input class="fld" id="f-tmin" inputmode="numeric" autocomplete="off"></label>
       <label class="fcell"><span>التذاكر إلى</span><input class="fld" id="f-tmax" inputmode="numeric" autocomplete="off"></label>
-      <label class="fcell"><span>الفترة من</span><input class="fld" id="f-from" type="date"></label>
-      <label class="fcell"><span>الفترة إلى</span><input class="fld" id="f-to" type="date"></label>
+      <div class="fcell"><span id="lbl-from">الفترة من</span><div class="dfield" id="f-from" data-key="from" aria-labelledby="lbl-from"></div></div>
+      <div class="fcell"><span id="lbl-to">الفترة إلى</span><div class="dfield" id="f-to" data-key="to" aria-labelledby="lbl-to"></div></div>
     </div>
     <div class="fdims" id="f-dims"></div>
     <p class="hint fnote">تُطبَّق المرشّحات على جدول البيانات والتجميع والتصدير. المؤشرات والملاحظات تعرض كل الصيدليات المشمولة.</p>

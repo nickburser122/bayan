@@ -496,7 +496,7 @@ function renderGroup(){
   lastGroup = m;
   const nk = state.group.keys.length;
   $('#g-head').innerHTML = m.cols.map((c, i) =>
-    '<th class="sortable' + (c.kind !== 'text' ? ' th-num' : '') + '" data-sort="' + i + '">' + esc(c.label) +
+    '<th class="sortable' + (c.kind !== 'text' ? ' th-num' : '') + '" data-sort="' + i + '" tabindex="0" role="columnheader" aria-sort="' + (m.sort.col === i ? (m.sort.dir > 0 ? 'ascending' : 'descending') : 'none') + '">' + esc(c.label) +
     (m.sort.col === i ? '<span class="arr' + (m.sort.dir > 0 ? ' up' : '') + '">' + ic('chev-d') + '</span>' : '') + '</th>'
   ).join('');
   const cell = (v, c, i, row) => {
@@ -508,7 +508,7 @@ function renderGroup(){
     return '<td class="td-num" data-raw="' + esc(rawKind(v, c.kind)) + '">' + fmtKind(v, c.kind) + '</td>';
   };
   if (!m.nRows){
-    $('#g-body').innerHTML = '<tr><td colspan="' + m.cols.length + '"><div class="empty">لا توجد بنود مشمولة.</div></td></tr>';
+    $('#g-body').innerHTML = '<tr><td colspan="' + m.cols.length + '"><div class="empty">' + (filterCount() ? 'لا توجد بنود مطابقة للمرشّحات.' : 'لا توجد بنود مشمولة.') + '</div></td></tr>';
     $('#g-foot').innerHTML = '';
   } else {
     const body = nk ? m.rows : [{ type:'row', cells:groupModelAllRow(m) }];
@@ -593,7 +593,7 @@ function renderData(){
   lastData = m;
   const sc = m.sort.col;
   $('#d-head').innerHTML = m.cols.map((c, i) =>
-    '<th class="sortable' + (c.kind !== 'text' ? ' th-num' : '') + '" data-dsort="' + i + '">' + esc(c.label) +
+    '<th class="sortable' + (c.kind !== 'text' ? ' th-num' : '') + '" data-dsort="' + i + '" tabindex="0" role="columnheader" aria-sort="' + (sc === i ? (m.sort.dir > 0 ? 'ascending' : 'descending') : 'none') + '">' + esc(c.label) +
     (sc === i ? '<span class="arr' + (m.sort.dir > 0 ? ' up' : '') + '">' + ic('chev-d') + '</span>' : '') + '</th>'
   ).join('');
   const shown = m.rows.slice(0, state.data.limit);
@@ -674,7 +674,8 @@ function toast(msg){
 let noticeTimer;
 function notify(msg, isErr, withUndo){
   clearTimeout(noticeTimer);
-  $('#notice-slot').innerHTML = '<div class="notice' + (isErr ? ' err' : '') + '"><span>' + esc(msg) + '</span>' + (withUndo ? '<button class="tool" id="btn-undo">' + ic('reset') + '<span>تراجع</span></button>' : '') + '</div>';
+  $('#notice-slot').innerHTML = '<div class="notice' + (isErr ? ' err' : '') + '"><span>' + esc(msg) + '</span>' + (withUndo ? '<button class="tool" id="btn-undo">' + ic('reset') + '<span>تراجع</span></button>' : '') + '<button type="button" class="chip-x" id="notice-x" aria-label="إغلاق">' + ic('x') + '</button></div>';
+  $('#notice-x').addEventListener('click', () => { clearTimeout(noticeTimer); $('#notice-slot').innerHTML = ''; });
   const u = $('#btn-undo');
   if (u) u.addEventListener('click', () => {
     if (state.prev){ Object.assign(state, state.prev); state.prev = null; resetFilters(); renderAll(); }
@@ -1020,6 +1021,13 @@ function stepMenu(d){
 function pickMenu(i){
   const it = menu.items[i];
   if (!it || it.sep) return;
+  if (it.action){
+    const cb = menu.onPick, back = menu.restore;
+    closeMenu();
+    if (cb) cb(it.value, it);
+    if (back) requestAnimationFrame(back);
+    return;
+  }
   if (menu.multi){
     it.selected = !it.selected;
     const top = menuEl.scrollTop;
@@ -1187,10 +1195,13 @@ const menuSpecs = {
   'filter-dim'(el){
     const k = el.dataset.dim;
     const cur = state.filters.dims[k] || [];
+    const head = cur.length ? [{ value: '', label: 'مسح الاختيار', action: true }, { sep: true }] : [];
     return {
       multi: true,
-      items: dimValues(k).map(v => ({ value: v, label: v, selected: cur.includes(v) })),
+      items: head.concat(dimValues(k).map(v => ({ value: v, label: v, selected: cur.includes(v) }))),
+      restore: () => { const b = $('[data-menu="filter-dim"][data-dim="' + k + '"]'); if (b) b.focus(); },
       onPick: (v, it) => {
+        if (it.action){ state.filters.dims[k] = []; renderFilters(); refreshViews(true); return; }
         const set = new Set(state.filters.dims[k] || []);
         if (it.selected) set.add(v); else set.delete(v);
         state.filters.dims[k] = [...set];
@@ -1821,7 +1832,149 @@ $('#btn-parse').addEventListener('click', () => {
   if (!res.ok) notify('لم يُكتشف جدول تلقائيًا. اختر «تعديل المصدر» لتحديد صف العناوين والأعمدة.', true);
 });
 
-const FILTER_FIELDS = { 'f-q': 'q', 'f-cmin': 'cMin', 'f-cmax': 'cMax', 'f-tmin': 'tMin', 'f-tmax': 'tMax', 'f-from': 'from', 'f-to': 'to' };
+const DATE_SEGS = [
+  { k: 'd', len: 2, ph: 'يوم', label: 'اليوم' },
+  { k: 'm', len: 2, ph: 'شهر', label: 'الشهر' },
+  { k: 'y', len: 4, ph: 'سنة', label: 'السنة' }
+];
+const daysIn = (y, m) => new Date(y || 2000, m, 0).getDate();
+const dateSegs = el => [...el.querySelectorAll('.dseg')];
+
+function buildDateField(el){
+  el.setAttribute('role', 'group');
+  el.innerHTML = DATE_SEGS.map((s, i) => (i ? '<span class="dsep" aria-hidden="true">/</span>' : '') +
+    '<input class="dseg dseg-' + s.k + '" dir="ltr" data-seg="' + s.k + '" inputmode="numeric" autocomplete="off" maxlength="' + s.len + '" placeholder="' + s.ph + '" aria-label="' + s.label + '">').join('') +
+    '<button type="button" class="dclear" aria-label="مسح التاريخ" tabindex="-1" hidden>' + ic('x') + '</button>';
+}
+
+function dateISO(el){
+  const [d, m, y] = dateSegs(el).map(i => i.value);
+  if (!d || !m || y.length !== 4) return '';
+  const D = +d, M = +m, Y = +y;
+  if (M < 1 || M > 12 || Y < 1900 || Y > 2100 || D < 1 || D > daysIn(Y, M)) return null;
+  return Y + '-' + pad2(M) + '-' + pad2(D);
+}
+
+function setDateField(el, iso){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+  const vals = m ? [m[3], m[2], m[1]] : ['', '', ''];
+  dateSegs(el).forEach((i, n) => { i.value = vals[n]; });
+  el.classList.remove('invalid');
+  el.querySelector('.dclear').hidden = !m;
+}
+
+function syncDate(el){
+  const key = el.dataset.key;
+  const v = dateISO(el);
+  el.classList.toggle('invalid', v === null);
+  el.querySelector('.dclear').hidden = !dateSegs(el).some(i => i.value);
+  const next = v || '';
+  if (state.filters[key] !== next){ state.filters[key] = next; refreshViews(true); }
+}
+
+function focusSeg(seg, end){
+  if (!seg) return;
+  seg.focus();
+  if (end) seg.setSelectionRange(seg.value.length, seg.value.length); else seg.select();
+}
+
+function padSeg(seg){
+  const k = seg.dataset.seg;
+  if ((k === 'd' || k === 'm') && seg.value.length === 1 && seg.value !== '0') seg.value = '0' + seg.value;
+  if (k === 'y' && seg.value.length === 2) seg.value = '20' + seg.value;
+}
+
+function fillDateFromText(el, text){
+  const t = norm(text);
+  let d, m, y, x;
+  if ((x = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/.exec(t))) { y = x[1]; m = x[2]; d = x[3]; }
+  else if ((x = /(\d{1,2})\D+(\d{1,2})\D+(\d{4})/.exec(t))) { d = x[1]; m = x[2]; y = x[3]; }
+  else if ((x = /^\s*(\d{2})(\d{2})(\d{4})\s*$/.exec(t))) { d = x[1]; m = x[2]; y = x[3]; }
+  else return false;
+  const segs = dateSegs(el);
+  segs[0].value = pad2(+d); segs[1].value = pad2(+m); segs[2].value = y;
+  syncDate(el);
+  return true;
+}
+
+$$('.dfield').forEach(buildDateField);
+
+const dateField = e => e.target.closest && e.target.closest('.dfield');
+$('#filter-card').addEventListener('focusin', e => { if (e.target.classList.contains('dseg')) e.target.select(); });
+$('#filter-card').addEventListener('input', e => {
+  const seg = e.target;
+  const el = seg.classList && seg.classList.contains('dseg') && dateField(e);
+  if (!el) return;
+  const k = seg.dataset.seg;
+  const len = DATE_SEGS.find(s => s.k === k).len;
+  let v = norm(seg.value).replace(/\D/g, '').slice(0, len);
+  seg.value = v;
+  const segs = dateSegs(el);
+  const next = segs[segs.indexOf(seg) + 1];
+  if (k === 'd' && v.length === 1 && +v > 3){ seg.value = '0' + v; focusSeg(next); }
+  else if (k === 'm' && v.length === 1 && +v > 1){ seg.value = '0' + v; focusSeg(next); }
+  else if (k !== 'y' && v.length === len) focusSeg(next);
+  syncDate(el);
+});
+$('#filter-card').addEventListener('focusout', e => {
+  const seg = e.target;
+  const el = seg.classList && seg.classList.contains('dseg') && dateField(e);
+  if (!el) return;
+  padSeg(seg);
+  syncDate(el);
+});
+$('#filter-card').addEventListener('keydown', e => {
+  const seg = e.target;
+  const el = seg.classList && seg.classList.contains('dseg') && dateField(e);
+  if (!el) return;
+  const segs = dateSegs(el);
+  const i = segs.indexOf(seg);
+  const k = seg.dataset.seg;
+  if (/^[\/\-.,\s]$/.test(e.key)){
+    e.preventDefault();
+    if (seg.value && i < segs.length - 1){ padSeg(seg); focusSeg(segs[i + 1]); syncDate(el); }
+  } else if (e.key === 'Backspace' && !seg.value && i > 0){
+    e.preventDefault();
+    const prev = segs[i - 1];
+    prev.value = prev.value.slice(0, -1);
+    focusSeg(prev, true);
+    syncDate(el);
+  } else if (e.key === 'ArrowLeft' && i < segs.length - 1 && seg.selectionEnd === 0){
+    e.preventDefault();
+    focusSeg(segs[i + 1], true);
+  } else if (e.key === 'ArrowRight' && i > 0 && seg.selectionStart === seg.value.length){
+    e.preventDefault();
+    focusSeg(segs[i - 1]);
+  } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown'){
+    e.preventDefault();
+    const dir = e.key === 'ArrowUp' ? 1 : -1;
+    const y = +segs[2].value, m = +segs[1].value;
+    const max = k === 'd' ? (y && m >= 1 && m <= 12 ? daysIn(y, m) : 31) : k === 'm' ? 12 : 2100;
+    const min = k === 'y' ? 1900 : 1;
+    let n = parseInt(seg.value, 10);
+    if (Number.isNaN(n)) n = k === 'y' ? new Date().getFullYear() : dir > 0 ? min : max;
+    else n = n + dir > max ? min : n + dir < min ? max : n + dir;
+    seg.value = k === 'y' ? String(n) : pad2(n);
+    seg.select();
+    syncDate(el);
+  }
+});
+$('#filter-card').addEventListener('paste', e => {
+  const el = e.target.classList && e.target.classList.contains('dseg') && dateField(e);
+  if (!el) return;
+  const text = (e.clipboardData || window.clipboardData).getData('text');
+  if (fillDateFromText(el, text)) e.preventDefault();
+});
+$('#filter-card').addEventListener('click', e => {
+  const c = e.target.closest('.dclear');
+  if (!c) return;
+  const el = c.closest('.dfield');
+  setDateField(el, '');
+  syncDate(el);
+  focusSeg(dateSegs(el)[0]);
+});
+
+const FILTER_FIELDS = { 'f-q': 'q', 'f-cmin': 'cMin', 'f-cmax': 'cMax', 'f-tmin': 'tMin', 'f-tmax': 'tMax' };
 function refreshViews(skipDims){
   state.data.limit = DATA_STEP;
   if (skipDims) renderFilterMeta(); else renderFilters();
@@ -1832,6 +1985,7 @@ function resetFilters(){
   state.filters = emptyFilters();
   state.data = { sort: null, limit: DATA_STEP };
   Object.keys(FILTER_FIELDS).forEach(id => { $('#' + id).value = ''; });
+  $$('.dfield').forEach(el => setDateField(el, ''));
 }
 $('#filter-card').addEventListener('input', e => {
   const k = FILTER_FIELDS[e.target.id];
@@ -1841,6 +1995,12 @@ $('#filter-card').addEventListener('input', e => {
 });
 $('#f-clear').addEventListener('click', () => { resetFilters(); refreshViews(false); });
 
+const sortKey = e => {
+  const th = e.target.closest('th.sortable');
+  if (th && (e.key === 'Enter' || e.key === ' ')){ e.preventDefault(); th.click(); }
+};
+$('#d-head').addEventListener('keydown', sortKey);
+$('#g-head').addEventListener('keydown', sortKey);
 $('#d-head').addEventListener('click', e => {
   const th = e.target.closest('[data-dsort]');
   if (!th || !lastData) return;
