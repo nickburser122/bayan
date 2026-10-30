@@ -185,7 +185,12 @@ function groupModel(){
     dir = -1;
     if (sc < 0){ sc = 0; dir = 1; }
   }
-  const sorter = (x, y) => dir * cmp(x.cells[sc], y.cells[sc]) || cmp(x.cells[0], y.cells[0]);
+  const blank = v => v == null || v === '' || (typeof v === 'number' && !isFinite(v));
+  const sorter = (x, y) => {
+    const a = x.cells[sc], b = y.cells[sc];
+    if (blank(a) !== blank(b)) return blank(a) ? 1 : -1;
+    return (blank(a) ? 0 : dir * cmp(a, b)) || cmp(x.cells[0], y.cells[0]);
+  };
   let out = [];
   if (g.subtotals && keys.length > 1){
     const lv = new Map();
@@ -362,7 +367,7 @@ function renderMix(){
   const rows = dataset();
   const T = sum(rows, r => r.cost);
   if (!T){ $('#mix').innerHTML = ''; return; }
-  const segs = groupBy(rows, 'type').map((g, i) => ({ name:g.name, p:g.cost / T * 100, c:MIX_COLORS[i % MIX_COLORS.length] }));
+  const segs = groupBy(rows, 'type').map((g, i) => ({ name:g.name, p:Math.max(0, g.cost / T * 100), c:MIX_COLORS[i % MIX_COLORS.length] }));
   $('#mix').innerHTML = '<h3>التكلفة حسب نوع التذكرة</h3><div class="mixbar">' +
     segs.map(s => '<span style="width:' + s.p.toFixed(2) + '%;background:' + s.c + '" title="' + esc(s.name) + '"></span>').join('') +
     '</div><div class="mixlegend">' + segs.map(s => '<span class="it"><span class="dot" style="background:' + s.c + '"></span>' + esc(s.name) + ' <b>' + nsp(s.p.toFixed(1) + '%') + '</b></span>').join('') + '</div>';
@@ -888,7 +893,7 @@ function doXLSX(ids, title){
     return aoa;
   };
   const widthsOf = m => m.cols.map((c, i) => {
-    const longest = Math.max(c.label.length, ...m.rows.map(r => String(fmtKind(r.cells[i], c.kind)).length));
+    const longest = m.rows.reduce((w, r) => Math.max(w, String(fmtKind(r.cells[i], c.kind)).length), c.label.length);
     return Math.min(48, Math.max(10, longest + 3));
   });
   if (S.kpis || (S.facts && S.facts.length)){
@@ -1569,7 +1574,7 @@ $('#stage-tag').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.pre
 $('#stage-mode').addEventListener('click', e => { const b = e.target.closest('button'); if (b){ stage.load = b.dataset.v; renderStage(); } });
 
 const srcEd = { i: -1, sheets: [], sheet: '', M: [], hdr: -1, roles: [], res: null, ncol: 0 };
-const SRC_ROWS = 150, SRC_COLS = 16;
+const SRC_ROWS = 150, SRC_COLS = 30;
 const roleLabel = r => (ROLE_ITEMS.find(x => x.value === r) || ROLE_ITEMS[0]).label;
 
 function colsToRoles(cols, n){
@@ -1783,7 +1788,7 @@ function stageItem(res, fileKey, fileName, fromFile){
 }
 
 function readFiles(input){
-  const files = [...input].filter(f => /\.(xlsx|xls|xlsm)$/i.test(f.name));
+  const files = [...input].filter(f => /\.(xlsx|xls|xlsm)$/i.test(f.name) && !f.name.startsWith('~$'));
   if (!files.length){ if ([...input].length) notify('الصيغ المدعومة: xlsx · xls · xlsm', true); return; }
   if (typeof XLSX === 'undefined'){ notify('مكتبة Excel غير محملة. استخدم «لصق».', true); return; }
   Promise.all(files.map(readOne)).then(out => {

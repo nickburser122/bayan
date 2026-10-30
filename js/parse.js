@@ -9,19 +9,55 @@ function norm(v){
 function toNum(v){
   if (v == null || v === '') return null;
   if (typeof v === 'number') return isFinite(v) ? v : null;
-  const s = norm(v).replace(/[,\u060C\u066C\s]/g, '').replace(/\u066B/g, '.').replace(/[^\d.\-]/g, '');
-  if (!s || s === '-' || s === '.') return null;
+  if (v instanceof Date) return null;
+  let s = norm(v).replace(/[\u200e\u200f\u202a-\u202e\u00a0]/g, ' ').replace(/\u066B/g, '.').replace(/[\u066C\u060C]/g, ',').trim();
+  s = s.replace(/\s*(جنيها|جنيه|ج\.\s?م\.?|ج\s?م|egp|le)\s*$/i, '').replace(/^\s*(egp|le)\s*/i, '').replace(/\s*%$/, '').trim();
+  let neg = false;
+  const par = /^\((.*)\)$/.exec(s);
+  if (par){ neg = true; s = par[1].trim(); }
+  const sg = /^([+\-\u2212])\s*(.*)$/.exec(s);
+  if (sg){ if (sg[1] !== '+') neg = !neg; s = sg[2]; }
+  s = s.replace(/\s+/g, '');
+  if (!/^(\d[\d,.]*|\.\d+)$/.test(s)) return null;
+  const lc = s.lastIndexOf(','), ld = s.lastIndexOf('.');
+  if (lc >= 0 && ld >= 0){
+    const dec = lc > ld ? ',' : '.';
+    const thou = dec === ',' ? '.' : ',';
+    if (s.split(dec).length > 2) return null;
+    s = s.split(thou).join('').replace(dec, '.');
+  } else if (lc >= 0){
+    if (/^\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g, '');
+    else if (/^\d+,\d{1,2}$/.test(s)) s = s.replace(',', '.');
+    else s = s.replace(/,/g, '');
+  } else if (ld >= 0 && s.split('.').length > 2){
+    if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+    else return null;
+  }
   const n = parseFloat(s);
-  return isFinite(n) ? n : null;
+  if (!isFinite(n)) return null;
+  return neg ? -n : n;
 }
 const RE_DATE_YMD = /^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})$/;
 const RE_DATE_DMY = /^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/;
+const mkDate = (y, m, d) => {
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(y, m - 1, d);
+  return dt.getMonth() === m - 1 ? dt : null;
+};
 function parseDateStr(t){
   let m = RE_DATE_YMD.exec(t);
-  if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+  if (m) return mkDate(+m[1], +m[2], +m[3]);
   m = RE_DATE_DMY.exec(t);
-  if (m) return new Date(+m[3], +m[2] - 1, +m[1]);
+  if (m) return mkDate(+m[3], +m[2], +m[1]);
   return null;
+}
+function fixDate(d){
+  if (!(d instanceof Date) || isNaN(d.getTime())) return d;
+  const r = new Date(Math.round(d.getTime() / 60000) * 60000);
+  const utcMid = r.getUTCHours() === 0 && r.getUTCMinutes() === 0;
+  const localMid = r.getHours() === 0 && r.getMinutes() === 0;
+  if (utcMid && !localMid) return new Date(r.getUTCFullYear(), r.getUTCMonth(), r.getUTCDate());
+  return new Date(r.getFullYear(), r.getMonth(), r.getDate(), r.getHours(), r.getMinutes());
 }
 const iso = d => d ? d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) : null;
 const isBlank = v => v == null || norm(v) === '';
@@ -83,7 +119,8 @@ const RE_NAME_LABEL = /اسم\s*الصيدلية|^الصيدلية$|^صيدلي�
 const RE_AREA_LABEL = /المنطقة|منطقة/;
 const RE_NAMEISH = /صيدلية|عيادة|مركز|وحدة صحية/;
 const RE_NOISE = /التكلفة|الفترة|الفتره|الطباعة|الهيئة/;
-const RE_TOTAL = /(إجمالي|اجمالي|الإجمالي|الاجمالي)/;
+const RE_TOTAL = /اجمالي|المجموع|مجموع|\btotal\b|\bsum\b/i;
+const arNorm = t => String(t).replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي');
 const NEIGHBOR_SPAN = 6;
 
 const isDateText = t => RE_DATE_YMD.test(t) || RE_DATE_DMY.test(t);
@@ -217,15 +254,29 @@ function pairOrder(M, hdr, col){
   return first >= second;
 }
 
+const RE_SERIAL = /^(م|#|مسلسل|رقم|ت|no\.?|serial)$/i;
+const matWidth = M => M.reduce((w, r) => Math.max(w, (r || []).length), 0);
+const isSerial = vals => vals.length >= 3 && vals.every((v, i) => Number.isInteger(v) && (i === 0 || v === vals[i - 1] + 1));
+
 function mapColumns(M, hdr){
   const hrow = M[hdr] || [];
-  const find = re => hrow.findIndex(c => re.test(norm(c)));
-  const spec = find(ROLE_RE.spec);
-  const doc = find(ROLE_RE.doc);
-  const type = find(ROLE_RE.type);
+  const width = Math.max(hrow.length, matWidth(M));
+  const isNumHead = t => ROLE_RE.count.test(t) || ROLE_RE.cost.test(t);
+  const find = (re, skipNum) => {
+    for (let c = 0; c < hrow.length; c++){
+      const t = norm(hrow[c]);
+      if (!t || !re.test(t)) continue;
+      if (skipNum && isNumHead(t)) continue;
+      return c;
+    }
+    return -1;
+  };
+  const spec = find(ROLE_RE.spec, true);
+  const doc = find(ROLE_RE.doc, true);
+  const type = find(ROLE_RE.type, true);
   const excl = new Set([spec, doc, type].filter(i => i >= 0));
   let pair = -1, pairHits = 0;
-  for (let c = 0; c < hrow.length; c++){
+  for (let c = 0; c < width; c++){
     if (excl.has(c)) continue;
     let hits = 0, filled = 0;
     for (let r = hdr + 1; r < M.length; r++){
@@ -239,14 +290,17 @@ function mapColumns(M, hdr){
   if (pair >= 0) return { spec, doc, type, cost: null, count: null, pair, countFirst: pairOrder(M, hdr, pair) };
   const anchor = doc >= 0 ? doc : (type >= 0 ? type : 0);
   const cand = [];
-  for (let c = 0; c < hrow.length; c++){
+  for (let c = 0; c < width; c++){
     if (excl.has(c)) continue;
     const vals = [];
     for (let r = hdr + 1; r < Math.min(M.length, hdr + 80); r++){
       const v = toNum((M[r] || [])[c]);
       if (v != null) vals.push(v);
     }
-    if (vals.length) cand.push({
+    if (!vals.length) continue;
+    const h = norm(hrow[c]);
+    if (!isNumHead(h) && isSerial(vals)) continue;
+    cand.push({
       c, n: vals.length,
       frac: vals.filter(v => Math.abs(v - Math.round(v)) > 1e-9).length / vals.length,
       total: vals.reduce((s, v) => s + Math.abs(v), 0)
@@ -257,7 +311,14 @@ function mapColumns(M, hdr){
   const costH = hrow.findIndex((c, i) => inCand(i) && ROLE_RE.cost.test(norm(c)) && !ROLE_RE.count.test(norm(c)));
   const countH = hrow.findIndex((c, i) => inCand(i) && ROLE_RE.count.test(norm(c)) && !ROLE_RE.cost.test(norm(c)));
   if (costH >= 0 && countH >= 0) return { spec, doc, type, cost: costH, count: countH, pair: null };
-  cand.sort((a, b) => b.n - a.n || Math.abs(a.c - anchor) - Math.abs(b.c - anchor));
+  const order = (a, b) => b.n - a.n || Math.abs(a.c - anchor) - Math.abs(b.c - anchor);
+  if (costH >= 0 || countH >= 0){
+    const rest = cand.filter(x => x.c !== costH && x.c !== countH).sort(order);
+    const other = rest.length ? rest[0].c : null;
+    if (costH >= 0) return { spec, doc, type, cost: costH, count: other, pair: null };
+    return { spec, doc, type, cost: other, count: countH, pair: null };
+  }
+  cand.sort(order);
   const picked = cand.slice(0, 2);
   let cost = null, count = null;
   if (picked.length === 2){
@@ -284,7 +345,7 @@ function extractRows(M, hdr, cols){
     const present = row.filter(v => !isBlank(v));
     if (!present.length){ fs = fd = ft = ''; continue; }
     const joined = row.map(norm).join(' ');
-    if (RE_TOTAL.test(joined)) continue;
+    if (RE_TOTAL.test(arNorm(joined))) continue;
     if (/التخصص/.test(joined) && /التذكرة/.test(joined)){ fs = fd = ft = ''; continue; }
     const sp = cols.spec >= 0 ? norm(row[cols.spec]) : '';
     const dc = cols.doc >= 0 ? norm(row[cols.doc]) : '';
@@ -329,14 +390,17 @@ function parseMatrix(rawM, sheetName, ov){
 
 function filledMatrix(ws){
   const m = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, cellDates: true });
-  const M = m.map(r => (r || []).slice());
-  const origin = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']).s : { r: 0, c: 0 };
+  const M = m.map(r => (r || []).map(fixDate));
+  const range = ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']) : null;
+  const origin = range ? range.s : { r: 0, c: 0 };
+  const maxR = range ? range.e.r - origin.r : M.length - 1;
+  const maxC = range ? range.e.c - origin.c : matWidth(M) - 1;
   (ws['!merges'] || []).forEach(mg => {
     const sr = mg.s.r - origin.r, sc = mg.s.c - origin.c;
-    const er = mg.e.r - origin.r, ec = mg.e.c - origin.c;
+    const er = Math.min(mg.e.r - origin.r, maxR), ec = Math.min(mg.e.c - origin.c, maxC);
     if (sr < 0 || sc < 0) return;
-    const anchor = (m[sr] || [])[sc];
-    if (anchor == null) return;
+    const anchor = (M[sr] || [])[sc];
+    if (anchor == null || typeof anchor === 'number' || isBlank(anchor)) return;
     for (let r = sr; r <= er; r++){
       if (!M[r]) M[r] = [];
       for (let c = sc; c <= ec; c++) M[r][c] = anchor;
@@ -368,9 +432,11 @@ function readOne(file){
 }
 
 function parsePasteText(text){
-  const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
+  const lines = String(text || '').split(/\r?\n/);
+  while (lines.length && lines[0].trim() === '') lines.shift();
+  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
   if (!lines.length) return null;
   const sep = lines.some(l => l.includes('\t')) ? '\t' : /\s{2,}/;
-  const M = lines.map(l => l.split(sep).map(s => (s == null ? null : String(s).trim() === '' ? null : s)));
+  const M = lines.map(l => l.trim() === '' ? [] : l.split(sep).map(s => (s == null ? null : String(s).trim() === '' ? null : s)));
   return parseMatrix(M, 'بيانات ملصوقة');
 }
